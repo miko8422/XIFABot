@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maid Agent</title>
+<style>
+  :root {
+    --bg: #faf8f5; --panel: #ffffff; --ink: #1f1d1a; --muted: #77716a; --line: #e6e1da;
+    --accent: #b5476a; --ok: #2f7d5b; --warn: #b7791f; --err: #b83a3a;
+    --asr: #5b7fc7; --llm: #8b6bc2; --tts: #c2766b; --play: #3c9c7c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #171614; --panel: #201f1c; --ink: #ece8e2; --muted: #9a938a; --line: #34312c; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.5 -apple-system, "Hiragino Sans", system-ui, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 60px;
+         display: grid; grid-template-columns: 1fr 340px; gap: 16px; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 12px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  .talk { display: flex; align-items: center; gap: 14px; margin: 14px 0; }
+  #ptt { flex: 1; height: 64px; border-radius: 10px; border: 2px solid var(--accent);
+         background: transparent; color: var(--accent); font-size: 16px; font-weight: 600; cursor: pointer; }
+  #ptt.on { background: var(--accent); color: #fff; }
+  #stop { height: 64px; padding: 0 18px; border-radius: 10px; border: 1px solid var(--line);
+          background: transparent; color: var(--ink); cursor: pointer; }
+  .state { font-weight: 600; padding: 2px 10px; border-radius: 99px; background: var(--line); }
+  .state.capturing { background: var(--accent); color: #fff; }
+  .state.committing, .state.responding { background: var(--warn); color: #fff; }
+  .meter { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+  .meter div { height: 100%; width: 0; background: var(--ok); transition: width .08s; }
+  #log { display: flex; flex-direction: column; gap: 10px; }
+  .turn { border-top: 1px solid var(--line); padding-top: 10px; }
+  .u { color: var(--muted); }
+  .a { font-size: 16px; margin: 2px 0 6px; }
+  .tag { font-size: 11px; color: var(--muted); }
+  .err { color: var(--err); }
+  .bar { position: relative; height: 18px; background: var(--line); border-radius: 4px; margin-top: 4px; }
+  .seg { position: absolute; top: 0; height: 100%; border-radius: 4px; }
+  .legend span { display: inline-flex; align-items: center; gap: 4px; margin-right: 10px; font-size: 11px; color: var(--muted); }
+  .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .big { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 12px; }
+  td, th { padding: 3px 4px; text-align: right; border-bottom: 1px solid var(--line); }
+  td:first-child, th:first-child { text-align: left; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; font-size: 12px; margin: 0; }
+  dt { color: var(--muted); } dd { margin: 0; word-break: break-all; }
+  .seg-btns { display: flex; gap: 0; margin-bottom: 10px; }
+  .seg-btns button { flex: 1; padding: 6px; border: 1px solid var(--line); background: transparent; color: var(--ink); cursor: pointer; }
+  .seg-btns button:first-child { border-radius: 6px 0 0 6px; } .seg-btns button:last-child { border-radius: 0 6px 6px 0; }
+  .seg-btns button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #partial { min-height: 22px; color: var(--muted); font-style: italic; margin: 6px 0 0; }
+  .turn.dropped { opacity: .45; }
+  input[type=range] { width: 100%; }
+  .screen-thumb { width: 100%; border-radius: 6px; border: 1px solid var(--line); display: block; margin: 8px 0 6px; }
+  .pill { font-size: 11px; padding: 1px 8px; border-radius: 99px; background: var(--line); color: var(--ink); }
+  .pill.fire { background: var(--accent); color: #fff; } .pill.speak { background: var(--ok); color: #fff; }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .scr { font-size: 12px; } .scr b { font-weight: 600; }
+  #scrlog { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow: auto; margin-top: 8px; }
+  #scrlog div { border-top: 1px solid var(--line); padding-top: 4px; font-size: 12px; }
+  .turn.proactive .u { color: var(--accent); }
+  select { width: 100%; padding: 4px; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; }
+</style>
+</head>
+<body>
+<main>
+  <section>
+    <h1>Maid Agent <span class="sub" id="modeLabel">v0.2 · push-to-talk</span></h1>
+    <div class="sub" id="hint">Hold <b>Space</b> (or the button) while speaking, release when done. <b>Esc</b> stops her.</div>
+    <div class="talk">
+      <button id="ptt">Hold to talk</button>
+      <button id="stop">Stop</button>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
+      <span id="state" class="state">connecting</span>
+      <div class="meter" style="flex:1"><div id="lvl"></div></div>
+    </div>
+    <div id="partial"></div>
+    <div class="legend">
+      <span><i style="background:var(--line)"></i>end-of-turn wait</span>
+      <span><i style="background:var(--asr)"></i>ASR</span>
+      <span><i style="background:var(--llm)"></i>LLM → first clause</span>
+      <span><i style="background:var(--tts)"></i>TTS first audio</span>
+      <span><i style="background:var(--play)"></i>speaking</span>
+    </div>
+    <div id="log" class="panel" style="margin-top:8px"></div>
+  </section>
+  <aside style="display:flex;flex-direction:column;gap:12px">
+    <div class="panel">
+      <div class="row" style="justify-content:space-between"><b>Screen</b><span id="scrState" class="pill">–</span></div>
+      <label class="sub row" style="margin-top:6px"><input type="checkbox" id="scrWatch"> watch main screen</label>
+      <label class="sub row"><input type="checkbox" id="scrSpeak"> let her speak about it</label>
+      <label class="sub">cooldown between her remarks: <b id="cdv">10</b> min</label>
+      <input type="range" id="cd" min="0" max="30" step="1" value="10">
+      <button id="look" style="width:100%;margin-top:6px;padding:6px;border-radius:6px;border:1px solid var(--accent);background:transparent;color:var(--accent);cursor:pointer">Look now (test)</button>
+      <img id="scrThumb" class="screen-thumb" alt="" hidden>
+      <div id="scrNow" class="scr sub"></div>
+      <div id="scrlog"></div>
+    </div>
+    <div class="panel">
+      <div class="sub">last first-sound latency</div>
+      <div class="big" id="last">–</div>
+      <div class="sub">speech end → first audible sample</div>
+    </div>
+    <div class="panel">
+      <table id="stats"><thead><tr><th>ms</th><th>p50</th><th>p90</th><th>p95</th><th>n</th></tr></thead><tbody></tbody></table>
+    </div>
+    <div class="panel">
+      <div class="seg-btns"><button id="mPtt" class="on">Push-to-talk</button><button id="mHf">Hands-free</button></div>
+      <label class="sub">end-of-turn silence: <b id="silv">600</b> ms</label>
+      <input type="range" id="sil" min="300" max="1500" step="50" value="600">
+      <label class="sub" style="display:flex;gap:6px;align-items:center;margin-top:6px">
+        <input type="checkbox" id="barge"> voice barge-in (headphones only)</label>
+    </div>
+    <div class="panel">
+      <label class="sub">voice</label>
+      <select id="voice"></select>
+      <dl id="info" style="margin-top:10px"></dl>
+    </div>
+  </aside>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const ws = new WebSocket(`ws://${location.host}/ws`);
+const send = (o) => ws.readyState === 1 && ws.send(JSON.stringify(o));
+const turns = {};   // gen -> {el}
+const done = [];    // turn summaries
+let talking = false;
+
+function down() { if (talking || mode !== "ptt") return; talking = true; $("ptt").classList.add("on"); send({cmd: "ptt_down"}); }
+function up() { if (!talking) return; talking = false; $("ptt").classList.remove("on"); send({cmd: "ptt_up"}); }
+addEventListener("keydown", (e) => {
+  if (e.code === "Space" && !e.repeat && e.target.tagName !== "SELECT") { e.preventDefault(); down(); }
+  if (e.code === "Escape") send({cmd: "stop"});
+});
+addEventListener("keyup", (e) => { if (e.code === "Space") { e.preventDefault(); up(); } });
+$("ptt").addEventListener("pointerdown", down);
+addEventListener("pointerup", up);
+$("stop").onclick = () => send({cmd: "stop"});
+$("voice").onchange = (e) => send({cmd: "voice", name: e.target.value});
+let mode = "ptt";
+$("mPtt").onclick = () => send({cmd: "mode", mode: "ptt"});
+$("mHf").onclick = () => send({cmd: "mode", mode: "handsfree"});
+$("sil").oninput = (e) => { $("silv").textContent = e.target.value; };
+$("sil").onchange = (e) => send({cmd: "end_silence", ms: +e.target.value});
+$("barge").onchange = (e) => send({cmd: "barge_in", on: e.target.checked});
+$("scrWatch").onchange = (e) => send({cmd: "screen_watch", on: e.target.checked});
+$("scrSpeak").onchange = (e) => send({cmd: "screen_speak", on: e.target.checked});
+$("cd").oninput = (e) => { $("cdv").textContent = e.target.value; };
+$("cd").onchange = (e) => send({cmd: "screen_cooldown", s: +e.target.value * 60});
+$("look").onclick = () => send({cmd: "screen_look"});
+const esc = (t) => String(t ?? "").replace(/[&<>]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"}[c]));
+function scrLog(html) {
+  const d = document.createElement("div"); d.innerHTML = html; $("scrlog").prepend(d);
+  while ($("scrlog").children.length > 30) $("scrlog").lastChild.remove();
+}
+
+function turnEl(gen) {
+  if (!turns[gen]) {
+    const el = document.createElement("div");
+    el.className = "turn";
+    el.innerHTML = `<div class="u"></div><div class="a"></div><div class="tag"></div><div class="bar"></div>`;
+    $("log").prepend(el);
+    turns[gen] = el;
+  }
+  return turns[gen];
+}
+
+function drawBar(el, s) {
+  const total = Math.max(s.first_sound_ms || 0, 1500);
+  const scale = (ms) => (100 * ms / total).toFixed(1) + "%";
+  // hands-free: work starts speculatively during the end-of-turn wait, so stages overlap it
+  const t0 = s.mode === "handsfree" && s.endpoint_ms != null
+    ? Math.max(0, s.first_sound_ms - s.endpoint_to_sound_ms - s.endpoint_ms) : 0;
+  const workStart = s.first_sound_ms != null
+    ? s.first_sound_ms - (s.playback_lag_ms || 0) - (s.tts_first_audio_ms || 0) - (s.llm_first_clause_ms || 0) - (s.asr_ms || 0)
+    : 0;
+  const w = Math.max(0, workStart);
+  const parts = [
+    ["line", t0, s.endpoint_ms],
+    ["asr", w, s.asr_ms],
+    ["llm", w + (s.asr_ms || 0), s.llm_first_clause_ms],
+    ["tts", w + (s.asr_ms || 0) + (s.llm_first_clause_ms || 0), s.tts_first_audio_ms],
+  ];
+  let html = "";
+  for (const [k, start, len] of parts) {
+    if (len == null) continue;
+    html += `<div class="seg" style="left:${scale(start || 0)};width:${scale(len)};background:var(--${k})"></div>`;
+  }
+  if (s.first_sound_ms != null)
+    html += `<div class="seg" style="left:${scale(s.first_sound_ms)};right:0;background:var(--play);opacity:.5"></div>`;
+  el.querySelector(".bar").innerHTML = html;
+}
+
+function pct(v, p) { const s = [...v].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.round(p / 100 * (s.length - 1)))]; }
+function renderStats() {
+  const keys = [["first_sound_ms", "first sound"], ["endpoint_ms", "end-of-turn wait"],
+                ["endpoint_to_sound_ms", "after endpoint"], ["asr_ms", "ASR"], ["llm_ttft_ms", "LLM 1st token"],
+                ["llm_first_clause_ms", "LLM 1st clause"], ["tts_first_audio_ms", "TTS 1st audio"],
+                ["stop_ms", "stop on cancel"]];
+  $("stats").querySelector("tbody").innerHTML = keys.map(([k, label]) => {
+    const v = done.map((d) => d[k]).filter((x) => x != null);
+    if (!v.length) return `<tr><td>${label}</td><td colspan="4" class="sub">–</td></tr>`;
+    return `<tr><td>${label}</td><td>${Math.round(pct(v, 50))}</td><td>${Math.round(pct(v, 90))}</td><td>${Math.round(pct(v, 95))}</td><td>${v.length}</td></tr>`;
+  }).join("");
+}
+
+ws.onmessage = (m) => {
+  const e = JSON.parse(m.data);
+  switch (e.type) {
+    case "info": {
+      mode = e.mode;
+      $("mPtt").classList.toggle("on", mode === "ptt");
+      $("mHf").classList.toggle("on", mode === "handsfree");
+      $("modeLabel").textContent = "v0.2 · " + (mode === "ptt" ? "push-to-talk" : "hands-free");
+      $("hint").innerHTML = mode === "ptt"
+        ? "Hold <b>Space</b> (or the button) while speaking, release when done. <b>Esc</b> stops her."
+        : "Just talk. A pause of the set length ends your turn. <b>Esc</b> stops her. Use headphones.";
+      $("ptt").disabled = mode !== "ptt";
+      $("ptt").style.opacity = mode === "ptt" ? 1 : .35;
+      $("sil").value = e.end_silence_ms; $("silv").textContent = e.end_silence_ms;
+      $("barge").checked = !!e.barge_in;
+      if (e.screen) {
+        $("scrWatch").checked = e.screen.watch; $("scrSpeak").checked = e.screen.speak;
+        $("cd").value = Math.round(e.screen.cooldown_s / 60); $("cdv").textContent = $("cd").value;
+      }
+      $("voice").innerHTML = e.voices.map((v) => `<option ${v === e.voice ? "selected" : ""}>${v}</option>`).join("");
+      $("info").innerHTML = ["asr", "llm", "tts", "input", "output", "warmup_ms", "run_dir"]
+        .map((k) => `<dt>${k}</dt><dd>${typeof e[k] === "object" ? JSON.stringify(e[k]) : e[k] ?? ""}</dd>`).join("");
+      break;
+    }
+    case "state": $("state").textContent = e.state; $("state").className = "state " + e.state; break;
+    case "level": $("lvl").style.width = Math.min(100, e.rms * 800) + "%"; break;
+    case "asr.partial": $("partial").textContent = "… " + e.text; break;
+    case "asr.final": {
+      $("partial").textContent = "";
+      const el = turnEl(e.gen);
+      el.querySelector(".u").textContent = `🎙 ${e.text || "(nothing heard)"}  [${e.language || "?"}]`;
+      break;
+    }
+    case "llm.delta": turnEl(e.gen).querySelector(".a").textContent += e.text; break;
+    case "error": {
+      const el = e.gen ? turnEl(e.gen) : turnEl("sys" + Date.now());
+      el.querySelector(".tag").innerHTML = `<span class="err">${e.message}</span>`;
+      break;
+    }
+    case "screen.status": $("scrState").textContent = e.state; $("scrState").className = "pill" + (e.state === "watching" ? " fire" : ""); break;
+    case "screen.settled": {
+      if (e.thumb) { $("scrThumb").src = e.thumb; $("scrThumb").hidden = false; }
+      const f = (v) => v == null ? "–" : v;
+      $("scrNow").innerHTML = `${e.time} · ${esc(e.app)} · meaning ${f(e.emb_dist)} · tile ${f(e.tile_max)}` +
+        (e.would_fire ? ` · <span class="pill fire">${esc(e.reasons.join(", "))}</span>` : ` · <span class="pill">no change worth a look</span>`);
+      break;
+    }
+    case "screen.stage": $("scrNow").innerHTML += `<br><b>${e.stage}…</b> ${esc(e.activity || "")}`; break;
+    case "screen.decision": {
+      const t = (e.time || "").slice(11, 19);
+      const act = e.action === "speak" ? `<span class="pill speak">speak</span> 「${esc(e.line)}」` : `<span class="pill">silent</span>`;
+      scrLog(`${t} ${esc(e.app)} ${e.manual ? "(test)" : ""}<br>${act} <span class="sub">${esc(e.reason || e.error || "")}</span>` +
+             (e.activity ? `<br><span class="sub">saw: ${esc(e.activity)}${e.notable ? " / " + esc(e.notable) : ""} · vision ${e.vision_ms ?? "–"} ms${e.llm_ms ? " · llm " + e.llm_ms + " ms" : ""}</span>` : ""));
+      break;
+    }
+    case "turn.summary": {
+      const el = turnEl(e.gen);
+      if (e.mode === "proactive") {
+        el.classList.add("proactive");
+        el.querySelector(".u").textContent = "🖥 she noticed something on the screen";
+        el.querySelector(".a").textContent = e.assistant_text;
+        el.querySelector(".tag").textContent = `spoke on her own · tts ${Math.round(e.tts_first_audio_ms ?? 0)} ms`;
+        break;
+      }
+      if (e.error === "cancelled:speculation_dropped") {
+        el.classList.add("dropped");
+        el.querySelector(".tag").textContent = "speculative start discarded: you kept talking";
+        break;
+      }
+      if (!e.error || e.cancelled) done.push(e);
+      const f = (v) => v == null ? "–" : Math.round(v);
+      el.querySelector(".tag").innerHTML =
+        (e.cancelled ? `<span class="err">interrupted · stopped in ${f(e.stop_ms)} ms</span> · ` : "") +
+        (e.error && !e.cancelled ? `<span class="err">${e.error}</span> · ` : "") +
+        `first sound <b>${f(e.first_sound_ms)} ms</b>` +
+        (e.mode === "handsfree" ? ` (wait ${f(e.endpoint_ms)} + ${f(e.endpoint_to_sound_ms)})` : "") + ` · asr ${f(e.asr_ms)} · llm ${f(e.llm_ttft_ms)}/${f(e.llm_first_clause_ms)} · tts ${f(e.tts_first_audio_ms)} · play ${f(e.playback_lag_ms)}`;
+      drawBar(el, e);
+      if (e.first_sound_ms != null) $("last").textContent = Math.round(e.first_sound_ms) + " ms";
+      renderStats();
+      break;
+    }
+  }
+};
+ws.onclose = () => { $("state").textContent = "disconnected"; $("state").className = "state"; };
+</script>
+</body>
+</html>

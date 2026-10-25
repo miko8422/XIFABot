@@ -1,0 +1,60 @@
+"""Configuration: TOML file for knobs, ../.env for secrets."""
+
+import os
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CONFIG = PROJECT_ROOT / "config" / "default.toml"
+
+
+@dataclass
+class VoiceProfile:
+    """Either a clone (ref_audio + ref_text) or a fine-tuned speaker (speaker, usually with its own model)."""
+    name: str
+    ref_audio: Path | None = None
+    ref_text: str = ""
+    language: str = "japanese"
+    speaker: str = ""   # CustomVoice speaker name; no reference audio is sent
+    model: str = ""     # overrides [tts].model for this voice
+
+
+@dataclass
+class Config:
+    raw: dict
+    voices: dict[str, VoiceProfile] = field(default_factory=dict)
+
+    def __getitem__(self, section: str) -> dict:
+        return self.raw[section]
+
+    @property
+    def voice(self) -> VoiceProfile:
+        return self.voices[self.raw["tts"]["voice_profile"]]
+
+    def secret(self, env_name: str) -> str:
+        value = os.environ.get(env_name)
+        if not value:
+            raise RuntimeError(f"missing environment variable {env_name} (expected in .env)")
+        return value
+
+
+def load_config(path: Path = DEFAULT_CONFIG) -> Config:
+    # .env lives next to the goal files, one level above the project
+    load_dotenv(PROJECT_ROOT.parent / ".env")
+    load_dotenv(PROJECT_ROOT / ".env")
+    raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    voices = {}
+    for name, v in raw.get("voices", {}).items():
+        voices[name] = VoiceProfile(
+            name=name,
+            ref_audio=PROJECT_ROOT / v["ref_audio"] if "ref_audio" in v else None,
+            ref_text=(PROJECT_ROOT / v["ref_text_file"]).read_text(encoding="utf-8").strip()
+            if "ref_text_file" in v else "",
+            language=v.get("language", "japanese"),
+            speaker=v.get("speaker", ""),
+            model=v.get("model", ""),
+        )
+    return Config(raw=raw, voices=voices)

@@ -1,0 +1,85 @@
+# Maid Voice Cascade v0.1 configuration. Secrets come from ../.env, never from this file.
+
+[audio]
+input_device = ""          # "" = system default; name substring otherwise
+output_device = ""
+capture_sample_rate = 16000
+playback_sample_rate = 24000
+save_raw_audio = false     # opt-in debug capture only
+
+[asr]
+provider = "omlx"
+base_url = "http://127.0.0.1:9800"
+model = "mlx-community--Qwen3-ASR-0.6B-8bit"
+language = ""              # "" = auto-detect (en/ja/mixed)
+
+[llm]
+provider = "deepseek"      # openai-compatible chat completions
+base_url_env = "BASE_URL"
+api_key_env = "API_KEY"
+model = "deepseek-flash"   # DeepSeek V4.1 Flash
+max_tokens = 120
+# thinking must be off: with it on, 2/5 probe turns spent the whole budget reasoning
+extra_body = { thinking = { type = "disabled" }, reasoning_effort = "low" }
+history_turns = 4
+output_language = "ja"
+
+[persona]
+# role card + expressions mined from her lines (scripts/build_expressions.py); off = the built-in prompt in llm.py
+enabled = true
+card = "../maid_agent/persona/natsume.v1.toml"
+expressions = "../maid_agent/persona/natsume_expressions.jsonl"
+top_k = 4
+
+[tts]
+provider = "omlx"
+base_url = "http://127.0.0.1:9800"
+model = "mlx-community--Qwen3-TTS-12Hz-1.7B-Base-8bit"
+stream = true
+streaming_interval = 0.2
+# codec sampling temperature; model default 0.9 causes occasional 80 ms "dropped mic" bursts
+temperature = 0.4
+voice_profile = "natsume_ft"   # fine-tuned; "natsume_a" = the previous ref_a clone
+
+[voices.natsume_ft]  # fine-tuned on 3.9 h of her lines (sft/, epoch 1), 8-bit MLX in oMLX's model dir
+speaker = "natsume"
+model = "natsume-qwen3tts-sft-e1-8bit"
+language = "japanese"
+
+[voices.natsume_a]
+ref_audio = "voices/natsume/ref_a.wav"
+ref_text_file = "voices/natsume/ref_a.txt"
+language = "japanese"
+
+[voices.natsume_c]  # calm line nat013_034
+ref_audio = "voices/natsume/ref_c.wav"
+ref_text_file = "voices/natsume/ref_c.txt"
+language = "japanese"
+
+[voices.natsume_d]  # casual nat110_014+nat013_007
+ref_audio = "voices/natsume/ref_d.wav"
+ref_text_file = "voices/natsume/ref_d.txt"
+language = "japanese"
+
+[voices.natsume_e]  # tsun nat107_006
+ref_audio = "voices/natsume/ref_e.wav"
+ref_text_file = "voices/natsume/ref_e.txt"
+language = "japanese"
+
+[voices.natsume_f]  # tsun nat013_086
+ref_audio = "voices/natsume/ref_f.wav"
+ref_text_file = "voices/natsume/ref_f.txt"
+language = "japanese"
+
+[metrics]
+dir = "runs"
+
+[vad]
+# hands-free endpointing (energy VAD with adaptive noise floor)
+spec_silence_ms = 250   # start ASR+LLM+TTS speculatively; playback held until end_silence_ms
+end_silence_ms = 600    # commits the turn; raise if it cuts you off mid-thought
+min_speech_ms = 120
+threshold_ratio = 3.0
+min_threshold = 0.008
+speculative = true
+barge_in = false        # voice interrupts her: headphones only until echo cancellation exists
