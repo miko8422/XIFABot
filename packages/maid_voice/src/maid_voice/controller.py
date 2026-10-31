@@ -5,19 +5,20 @@ Invariants (ARCHITECTURE §5):
 - a new turn or an explicit stop cancels the old one *before* the new generation opens
 - every downstream packet carries generation_id; stale ones are dropped, never played
 - any stage failure ends the turn and returns to 'listening' without raising
+- tool calls (side effects) run only once their turn is committed; a dropped speculation runs none
 """
 
 import asyncio
 import itertools
 import uuid
-from dataclasses import asdict
-from typing import Awaitable, Callable
+from dataclasses import asdict, dataclass, field
+from typing import Awaitable, Callable, Protocol
 
 import numpy as np
 
 from .asr import ASRAdapter
 from .config import VoiceProfile
-from .llm import ChatTurn, LLMAdapter
+from .llm import ChatTurn, LLMAdapter, ToolCall
 from .metrics import MetricsSink, TurnTrace, now_ns
 from .segmenter import ClauseSegmenter
 from .tts import TTSAdapter
@@ -33,6 +34,24 @@ class PlaybackSink:
     def enqueue(self, gen: int, pcm: np.ndarray) -> bool: ...
     def finish_generation(self, gen: int) -> None: ...
     def stop_now(self, gen: int) -> None: ...
+
+
+@dataclass
+class TurnPlan:
+    """What an extension adds to one reply call."""
+    context: str = ""                                            # appended to the system prompt
+    tools: list[dict] | None = None
+    calls: list[ToolCall] = field(default_factory=list)          # run after the reply regardless of the LLM
+    fallback_calls: list[ToolCall] = field(default_factory=list)  # run only if the LLM called nothing
+
+
+class TurnHooks(Protocol):
+    """Lets an extension (maid_agent) route inside the reply call without maid_voice knowing about tasks."""
+
+    async def plan(self, text: str, kind: str) -> TurnPlan: ...      # kind: "turn" | "notice"
+    def ack(self, calls: list[ToolCall]) -> str | None: ...          # line to say if the LLM said nothing
+    async def run(self, calls: list[ToolCall], user_text: str) -> None: ...
+    def remember(self, turns: list[ChatTurn], mode: str, tool_calls: list[dict]) -> None: ...  # entered the history
 
 
 class TurnController:
@@ -57,6 +76,8 @@ class TurnController:
         self._committed: set[int] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
         self.completed: list[dict] = []
+        self.hooks: TurnHooks | None = None
+        self._deferred: dict[int, tuple[list[ToolCall], str]] = {}  # gen -> tool calls waiting for commit
 
     # ---- events -------------------------------------------------------
     async def _emit(self, event: dict) -> None:
@@ -101,6 +122,7 @@ class TurnController:
             trace.error = trace.error or f"cancelled:{reason}"
             self._halt_traces[gen] = trace
         self.active_gen = 0
+        self._deferred.pop(gen, None)
         self.player.stop_now(gen)
         self._task.cancel()
         self._trace = None
@@ -116,6 +138,8 @@ class TurnController:
         self._trace.t_endpoint_ns = t_endpoint_ns
         self._committed.add(gen)
         self.player.release(gen)
+        if gen in self._deferred:
+            asyncio.ensure_future(self._run_calls(*self._deferred.pop(gen)))
         return True
 
     async def stop(self, reason: str = "user") -> None:
@@ -169,6 +193,26 @@ class TurnController:
         self._task = asyncio.create_task(self._run_say(trace))
         return self._task
 
+    def notify(self, prompt: str, source: str = "notice") -> asyncio.Task | None:
+        """Have her say `prompt` (an event, not something あきら said) in her own words through the reply LLM.
+        Same refusal rules as say(); the prompt is not added to the history, her line is."""
+        if self.active_gen or self.state != "listening" or not prompt.strip():
+            return None
+        self._loop = asyncio.get_running_loop()
+        gen = next(self._gen_ids)
+        self.active_gen = gen
+        self.player.begin_generation(gen, False)
+        self._committed.add(gen)
+        trace = TurnTrace(
+            session_id=self.session_id, utterance_id=uuid.uuid4().hex[:8], generation_id=gen,
+            source=source, mode="notice", t_speech_end_ns=now_ns(), notice=prompt.strip(),
+            llm_model=self.llm.model, tts_model=self.voice.model or self.tts.model,
+            voice_profile=self.voice.name, output_device=self.output_device,
+        )
+        self._trace = trace
+        self._task = asyncio.create_task(self._run_say(trace, self._notice_stage))
+        return self._task
+
     # ---- turn pipeline ------------------------------------------------
     async def _run_turn(self, trace: TurnTrace, pcm: np.ndarray, sample_rate: int) -> None:
         gen = trace.generation_id
@@ -186,14 +230,13 @@ class TurnController:
 
             await self._speak(trace, self._llm_stage)
             if gen in self._committed:
-                self.history += [ChatTurn("user", trace.user_text), ChatTurn("assistant", trace.assistant_text)]
-            self.history = self.history[-2 * self.history_turns:]
+                self._remember([ChatTurn("user", trace.user_text), ChatTurn("assistant", trace.assistant_text)], trace)
             self._finish(trace)
         except asyncio.CancelledError:
             # trace is finished by the 'halted' playback event (see cancel())
             if trace.user_text and gen in self._committed:
-                self.history += [ChatTurn("user", trace.user_text),
-                                 ChatTurn("assistant", trace.assistant_text + "（中断）")]
+                self._remember([ChatTurn("user", trace.user_text),
+                                ChatTurn("assistant", trace.assistant_text + "（中断）")], trace)
             raise
         except Exception as e:  # stage failure: report, recover, keep the app alive
             trace.error = f"{type(e).__name__}: {e}"
@@ -226,11 +269,11 @@ class TurnController:
             await self._put_clause(trace, clauses, clause)
         await clauses.put(None)
 
-    async def _run_say(self, trace: TurnTrace) -> None:
+    async def _run_say(self, trace: TurnTrace, stage=None) -> None:
         gen = trace.generation_id
         try:
-            await self._speak(trace, self._fixed_text_stage)
-            self.history = [*self.history, ChatTurn("assistant", trace.assistant_text)][-2 * self.history_turns:]
+            await self._speak(trace, stage or self._fixed_text_stage)
+            self._remember([ChatTurn("assistant", trace.assistant_text)], trace)
             self._finish(trace)
         except asyncio.CancelledError:
             raise
@@ -244,10 +287,20 @@ class TurnController:
                 self.active_gen = 0
                 await self._set_state("listening")
 
-    async def _llm_stage(self, trace: TurnTrace, clauses: asyncio.Queue) -> None:
+    async def _notice_stage(self, trace: TurnTrace, clauses: asyncio.Queue) -> None:
+        await self._llm_stage(trace, clauses, kind="notice")
+
+    async def _llm_stage(self, trace: TurnTrace, clauses: asyncio.Queue, kind: str = "turn") -> None:
         seg = ClauseSegmenter()
+        text = trace.notice if kind == "notice" else trace.user_text
+        plan = await self.hooks.plan(text, kind) if self.hooks else TurnPlan()
+        kwargs = {"context": plan.context, "tools": plan.tools} if self.hooks else {}
+        calls: list[ToolCall] = []
         trace.mark("llm_request")
-        async for delta in self.llm.stream_response(self.history, trace.user_text):
+        async for delta in self.llm.stream_response(self.history, text, **kwargs):
+            if delta.tool_call:
+                calls.append(delta.tool_call)
+                continue
             if delta.usage:
                 trace.usage = delta.usage
                 estimate = getattr(self.llm, "estimate_cost", None)
@@ -260,9 +313,36 @@ class TurnController:
             await self._emit({"type": "llm.delta", "gen": trace.generation_id, "text": delta.text})
             for clause in seg.push(delta.text):
                 await self._put_clause(trace, clauses, clause)
+        calls = [*plan.calls, *(calls or plan.fallback_calls)]
+        if calls and self.hooks:
+            trace.tool_calls = [{"name": c.name, "arguments": c.arguments} for c in calls]
+            await self._emit({"type": "tool_calls", "gen": trace.generation_id, "calls": trace.tool_calls})
+            if not trace.assistant_text.strip() and (line := self.hooks.ack(calls)):
+                trace.assistant_text = line  # she called a tool without a word: say a fixed acknowledgement
+                for clause in seg.push(line):
+                    await self._put_clause(trace, clauses, clause)
+            gen = trace.generation_id
+            if gen in self._committed:
+                asyncio.ensure_future(self._run_calls(calls, trace.user_text))
+            else:
+                self._deferred[gen] = (calls, trace.user_text)
         for clause in seg.flush():
             await self._put_clause(trace, clauses, clause)
         await clauses.put(None)
+
+    def _remember(self, turns: list[ChatTurn], trace: TurnTrace) -> None:
+        self.history = [*self.history, *turns][-2 * self.history_turns:]
+        if self.hooks:
+            try:
+                self.hooks.remember(turns, trace.mode, trace.tool_calls)
+            except Exception as e:  # a failing log write must not take the voice loop down
+                asyncio.ensure_future(self._emit({"type": "error", "message": f"remember failed: {e}"}))
+
+    async def _run_calls(self, calls: list[ToolCall], user_text: str) -> None:
+        try:
+            await self.hooks.run(calls, user_text)
+        except Exception as e:  # a failing side effect must not take the voice loop down
+            await self._emit({"type": "error", "message": f"tool calls failed: {type(e).__name__}: {e}"})
 
     async def _put_clause(self, trace: TurnTrace, clauses: asyncio.Queue, clause: str) -> None:
         if trace.t_first_clause_ns is None:

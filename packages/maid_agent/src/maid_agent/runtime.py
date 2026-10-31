@@ -8,9 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .core import Harness
-from .models import RouteDecision, TaskEvent, TaskRecord
-from .router import route_text
+from maid_harness import Harness
+from maid_harness.models import TaskEvent, TaskRecord
+
+from .router import RouteDecision, route_text
 
 
 @dataclass(frozen=True)

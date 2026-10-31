@@ -15,7 +15,6 @@ from collections.abc import Iterable
 from typing import Any
 
 from .core import Harness
-from .router import route_text
 
 PROTOCOL_VERSION = "2025-06-18"
 
@@ -81,8 +80,8 @@ def _result(value: Any) -> dict[str, Any]:
 async def call_tool(name: str, args: dict[str, Any], harness: Harness) -> dict[str, Any]:
     if name == "task_submit":
         request = str(args.get("request", "")).strip()
-        decision = route_text(request)
-        route = str(args.get("route") or ("computer_use" if decision.route == "computer_use" else "task"))
+        # Routing is the Maid's decision; callers pass computer_use explicitly.
+        route = str(args.get("route") or "task")
         task = await harness.submit(
             request,
             route=route,  # type: ignore[arg-type]

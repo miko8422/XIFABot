@@ -24,6 +24,10 @@ Return only JSON:
   "sensitive": true if it shows private messages, passwords, banking or similar}}"""
 
 
+QUESTION = """
+Akira asked about the screen: {q!r}. Add one more key, "answer": a direct, factual answer to that question from what is visible."""
+
+
 @dataclass
 class Observation:
     activity: str
@@ -32,6 +36,7 @@ class Observation:
     sensitive: bool
     raw: str
     ms: float
+    answer: str = ""  # only when describe() was given a question
 
 
 class ScreenVision:
@@ -39,7 +44,7 @@ class ScreenVision:
         self.model = model
         self._client = httpx.AsyncClient(base_url=base_url, timeout=120)
 
-    async def describe(self, image: Image.Image, app: str) -> Observation:
+    async def describe(self, image: Image.Image, app: str, question: str = "") -> Observation:
         import time
         img = image.copy()
         img.thumbnail((1280, 1280))
@@ -49,7 +54,7 @@ class ScreenVision:
         body = {"model": self.model, "max_tokens": 200, "temperature": 0,
                 "chat_template_kwargs": {"enable_thinking": False},
                 "messages": [{"role": "user", "content": [
-                    {"type": "text", "text": PROMPT.format(app=app or "unknown")},
+                    {"type": "text", "text": PROMPT.format(app=app or "unknown") + (QUESTION.format(q=question) if question else "")},
                     {"type": "image_url", "image_url": {"url": url}}]}]}
         t0 = time.monotonic()
         r = await self._client.post("/v1/chat/completions", json=body)
@@ -62,7 +67,8 @@ class ScreenVision:
         except json.JSONDecodeError:
             d = {}
         return Observation(str(d.get("activity", text[:200])), str(d.get("notable", "")),
-                           bool(d.get("worth_mentioning", False)), bool(d.get("sensitive", False)), text, ms)
+                           bool(d.get("worth_mentioning", False)), bool(d.get("sensitive", False)), text, ms,
+                           str(d.get("answer", "")))
 
     async def aclose(self) -> None:
         await self._client.aclose()

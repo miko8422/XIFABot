@@ -1,15 +1,11 @@
 import asyncio
-import json
 import time
 
 import pytest
+from maid_harness import Harness
 
-from maid_agent.harness.core import Harness
-from maid_agent.harness.inbox import EventInbox
-from maid_agent.harness.maid import MaidRuntime
-from maid_agent.harness.mcp_server import dispatch
-from maid_agent.harness.registry import TaskRegistry
-from maid_agent.harness.router import benchmark, route_text
+from maid_agent.router import benchmark, route_text
+from maid_agent.runtime import MaidRuntime
 
 
 def test_router_is_fast_and_has_the_expected_boundaries():
@@ -21,18 +17,6 @@ def test_router_is_fast_and_has_the_expected_boundaries():
     assert route_text("现在几点").route == "reporter_query"
     measured = benchmark(500)
     assert measured["p95_ms"] < 5.0
-
-
-def test_event_inbox_deduplicates_and_expires():
-    clock = [100.0]
-    registry = TaskRegistry()
-    inbox = EventInbox(registry, lambda: clock[0])
-    first = inbox.publish("system.changed", "test", {"text": "a"}, dedupe_key="same", ttl_seconds=10)
-    duplicate = inbox.publish("system.changed", "test", {"text": "a"}, dedupe_key="same", ttl_seconds=10)
-    assert duplicate.event_id == first.event_id
-    assert len(inbox.list()) == 1
-    clock[0] = 111.0
-    assert inbox.list() == []
 
 
 @pytest.mark.asyncio
@@ -60,27 +44,6 @@ async def test_computer_use_waits_for_confirmation():
     await maid.confirm(reply.task_id)
     task = await harness.wait(reply.task_id, timeout=1)
     assert task.status == "completed"
-
-
-@pytest.mark.asyncio
-async def test_mcp_initialize_tools_and_task_call():
-    harness = Harness(worker_delay_s=0.001)
-    init = await dispatch({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}, harness)
-    assert init["result"]["serverInfo"]["name"] == "maid-harness"
-    tools = await dispatch({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, harness)
-    assert {tool["name"] for tool in tools["result"]["tools"]} >= {"task_submit", "task_get", "event_publish"}
-    result = await dispatch(
-        {
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "tools/call",
-            "params": {"name": "task_submit", "arguments": {"request": "构建这个项目"}},
-        },
-        harness,
-    )
-    payload = result["result"]["structuredContent"]
-    assert payload["status"] in {"accepted", "running"}
-    await harness.wait(payload["task_id"], timeout=1)
 
 
 @pytest.mark.asyncio

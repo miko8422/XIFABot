@@ -28,4 +28,4 @@
 
 ## Package boundaries
 
-`packages/maid_voice` owns the low-latency voice loop and provider adapters. `packages/maid_agent` adds the Maid identity, screen perception, and proactive decision layer while reusing that voice loop. This boundary is deliberately small so the packages can later be moved behind a larger event and memory service.
+`packages/maid_voice` owns the low-latency voice loop and provider adapters. `packages/maid_harness` owns the event inbox, task registry, workers, MCP server and the screen reporter. `packages/maid_agent` is the Maid: identity, routing, notifications and the proactive decision layer, on top of the other two. See `ARCHITECTURE.md` §7.
