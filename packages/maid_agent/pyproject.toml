@@ -1,6 +1,6 @@
 [project]
 name = "maid-agent"
-version = "0.4.0"
+version = "0.1.0"
 description = "The Maid: persona, routing, notifications, on top of maid_voice and maid_harness"
 readme = "README.md"
 requires-python = ">=3.12"

@@ -1,4 +1,4 @@
-# XIFABot Demo — the Maid Agent (v0.4.0)
+# XIFABot — the Maid Agent (v0.1 demo)
 
 ナツメ, a Japanese voice companion that lives next to your Mac. She talks with low latency (about 1 s to first sound), knows what she is able to do, hands heavy work to sandboxed Codex sub-agents, asks you by voice when they need an answer or a permission, watches your screen and activity, and decides when to speak and when to stay quiet.
 
