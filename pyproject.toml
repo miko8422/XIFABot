@@ -3,9 +3,26 @@ name = "xifabot-demo"
 version = "0.1.0"
 description = "Japanese voice runtime and screen-aware Maid Agent prototype"
 requires-python = ">=3.12"
+# Depending on every member makes a plain `uv sync` install the whole workspace.
+dependencies = ["maid-agent", "maid-harness", "maid-voice"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
 
 [tool.uv]
 package = false
 
 [tool.uv.workspace]
 members = ["packages/maid_voice", "packages/maid_harness", "packages/maid_agent"]
+
+[tool.uv.sources]
+maid-agent = { workspace = true }
+maid-harness = { workspace = true }
+maid-voice = { workspace = true }
+
+[tool.pytest.ini_options]
+testpaths = ["packages/maid_voice/tests", "packages/maid_harness/tests", "packages/maid_agent/tests"]
+asyncio_default_fixture_loop_scope = "function"

@@ -1,4 +1,4 @@
-"""Configuration: TOML file for knobs, ../.env for secrets."""
+"""Configuration: TOML file for knobs, the repo-root .env for secrets."""
 
 import os
 import tomllib
@@ -8,6 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = PROJECT_ROOT.parents[1]  # packages/maid_voice -> repo root
 DEFAULT_CONFIG = PROJECT_ROOT / "config" / "default.toml"
 
 
@@ -42,8 +43,8 @@ class Config:
 
 
 def load_config(path: Path = DEFAULT_CONFIG) -> Config:
-    # .env lives next to the goal files, one level above the project
-    load_dotenv(PROJECT_ROOT.parent / ".env")
+    # .env lives at the repo root; a package-local .env is still honored
+    load_dotenv(REPO_ROOT / ".env")
     load_dotenv(PROJECT_ROOT / ".env")
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
     voices = {}

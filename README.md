@@ -14,10 +14,10 @@ The current ASR setting is Japanese-only input (`language = "ja"`). The agent's 
 
 ## Run locally
 
-From this directory, create the environment with `uv sync --all-packages`. A plain `uv sync` installs only the empty root project and removes the packages. Then configure the local `.env` and the oMLX endpoints described in `docs/EXTRACTED_FEATURES.md`.
+From this directory, create the environment with `uv sync`, which installs all three packages and the test tools. Then configure the local `.env` and the oMLX endpoints described in `docs/EXTRACTED_FEATURES.md`.
 
 ```bash
-uv sync --all-packages
+uv sync
 uv run pytest        # all three packages
 cd packages/maid_voice
 uv run maid-voice serve

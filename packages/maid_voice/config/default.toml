@@ -1,4 +1,4 @@
-# Maid Voice Cascade v0.1 configuration. Secrets come from ../.env, never from this file.
+# Maid Voice Cascade v0.1 configuration. Secrets come from the repo-root .env, never from this file.
 
 [audio]
 input_device = ""          # "" = system default; name substring otherwise

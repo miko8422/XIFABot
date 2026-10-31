@@ -5,7 +5,7 @@ Goal and design: `../../docs/maid_voice_cascade_GOAL.md`, `../../docs/maid_voice
 
 ## Run
 
-Requirements: macOS on Apple Silicon, [uv](https://docs.astral.sh/uv/), oMLX running on `127.0.0.1:9800`, and `../.env` containing `BASE_URL` and `API_KEY` (DeepSeek).
+Requirements: macOS on Apple Silicon, [uv](https://docs.astral.sh/uv/), oMLX running on `127.0.0.1:9800`, and the repo-root `.env` (`XIFABot_Demo/.env`) containing `BASE_URL` (`https://api.deepseek.com`) and `API_KEY` (DeepSeek).
 
 ```sh
 # one-time setup: models (oMLX picks them up from the HF cache) and the reference voice

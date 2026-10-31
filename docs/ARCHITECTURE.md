@@ -230,16 +230,34 @@ packages/
 
 Done in P0. `maid_harness` holds `core`, `inbox`, `registry`, `models`, `workers`, `mcp_server` and `reporters/screen/`. `maid_agent` holds `router.py` (with `RouteDecision`), `runtime.py` (the Maid-facing `MaidRuntime`), `demo.py`, `proactive.py` and the CLI. The Maid depends on the harness API only, and the harness never imports `maid_agent`.
 
-## 8. Current state
+## 8. Feature status
 
-| Piece | State |
-| --- | --- |
-| Voice runtime | Working, about 0.94 s p50 to first sound |
-| Persona (role card, expression retrieval) | Working |
-| Screen observer + prototype proactive speech | Working prototype, not yet behind the event contract |
-| Harness v0.1: records, inbox, registry, demo worker, confirmation, MCP stdio server | Working in isolation (`maid-agent demo`), **not connected to voice** |
-| Keyword router | Works for Chinese/English, weak for Japanese |
-| Real sub-agent, task answer/resume, reporters, memory, persistence | Not started |
+Updated when a phase lands. ✅ done · 🧪 prototype, to be rebuilt · ⏳ planned.
+
+| Feature | Phase | State |
+| --- | --- | --- |
+| Voice loop: mic, VAD, ASR, DeepSeek reply, Natsume TTS, barge-in, latency metrics | before P0 | ✅ about 0.94 s p50 to first sound |
+| Persona: role card, expression retrieval | before P0 | ✅ |
+| Harness core: task records, SQLite registry, event inbox (dedupe, TTL), demo worker, cancel, computer-use confirmation, MCP stdio server | before P0 | ✅ works on its own, not connected to voice |
+| Merged multi-task notifications | before P0 | ✅ fixed Japanese templates |
+| Screen observer, calibration logger, proactive screen remarks | before P0 | 🧪 rebuilt as a reporter in P4 |
+| Keyword router | before P0 | 🧪 becomes the fallback in P1 |
+| Package split (`maid_harness`), docs, `uv sync`, `.env` loading | P0 | ✅ |
+| `delegate` tool for intent detection, immediate acknowledgement | P1 | ⏳ |
+| Task state for 「どうなった？」 questions (T1 lookups) | P1 | ⏳ |
+| Speech arbiter v1: never over the user, merge, heartbeat | P1 | ⏳ |
+| Cancel by voice | P1 | ⏳ |
+| ASR auto-detect (Japanese/English), English task arguments, in-character notices | P1 | ⏳ |
+| Conversation log, restored after restart | P2 | ⏳ |
+| Codex sub-agent runner, `quick`/`work` profiles, sandboxed task workspace | P3 | ⏳ |
+| Sub-agent tools: `report_progress`, `ask_user`, `request_permission`, `submit_result` | P3 | ⏳ |
+| Answering sub-agent questions and permission requests by voice, follow-up resume, timeout, `interrupted` on restart | P3 | ⏳ |
+| ActivityWatch reporter, `activity_profiles` (game/call/work) | P4 | ⏳ |
+| Screen reporter (rebuilt from the observer), per-activity speech rules | P4 | ⏳ |
+| Memory bank: from task summaries and 「覚えておいて」, list/correct/delete | P5 | ⏳ |
+| Computer-use sub-agent: confirmation, action budget, verified result | P6 | ⏳ |
+| Email, internet, Steam reporters; pop-up cards | P7 | ⏳ |
+| Windows capture service, cloud deployment | after P7 | ⏳ |
 
 ## 9. Plan
 
