@@ -268,7 +268,7 @@ ws.onmessage = (m) => {
     }
     case "tasks": {
       const ago = (t) => { const s = Date.now() / 1000 - t; return s < 60 ? Math.round(s) + "s" : Math.round(s / 60) + "m"; };
-      const live = ["accepted", "running", "waiting_confirmation", "needs_input"];
+      const live = ["accepted", "running", "waiting_confirmation", "needs_input", "needs_permission"];
       $("tasks").innerHTML = e.tasks.length ? e.tasks.map((t) =>
         `<div><span class="pill${t.status === "running" ? " fire" : t.status === "completed" ? " speak" : ""}">${t.status}</span> ` +
         `<b>${esc(t.tier || "")}</b> ${esc(t.goal)}<br><span class="sub">${t.task_id} · ${ago(t.created_at)} ago` +

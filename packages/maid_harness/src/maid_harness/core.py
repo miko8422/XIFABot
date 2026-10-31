@@ -1,4 +1,12 @@
-"""Harness supervisor: one task record and one worker for each heavy request."""
+"""Harness supervisor: one task record and one worker for each heavy request.
+
+A run ends in one of three ways (ARCHITECTURE §5.2):
+  result   the sub-agent called submit_result      -> completed (the only way to complete)
+  pause    it called ask_user / request_permission -> needs_input / needs_permission, resumed by
+           answer() / grant() with the reply as the next message of the same agent session
+  neither  it exited without submitting           -> failed, never completed
+Old-style workers that just return a summary string still complete as before.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +21,10 @@ from .inbox import EventInbox
 from .models import Route, TaskEvent, TaskRecord
 from .registry import TaskRegistry
 from .workers import DemoWorker, Worker
+
+
+ACTIVE = ("accepted", "running", "needs_input", "needs_permission", "waiting_confirmation")
+RESUMABLE = ("completed", "failed", "interrupted")
 
 
 class Harness:
@@ -42,7 +54,7 @@ class Harness:
         """On startup: tasks left active by the previous process are marked `interrupted` (§6)."""
         out = []
         for task in self.registry.list():
-            if task.status in {"accepted", "running", "needs_input", "waiting_confirmation"}:
+            if task.status in ACTIVE:
                 task = self.registry.update(task.task_id, status="interrupted", error="the Maid was restarted")
                 self._emit("task.interrupted", task, {"reason": task.error})
                 out.append(task)
@@ -97,6 +109,72 @@ class Harness:
             self._emit("task.cancelled", task, {"reason": reason}, priority="high")
         return task
 
+    # ---- the user's side of a paused or finished task (called by the Maid) ----------
+    async def answer(self, task_id: str, answer: str) -> TaskRecord:
+        """Reply to ask_user; the same agent session continues with the answer."""
+        task = self._get(task_id)
+        if task.status != "needs_input":
+            return task
+        self._emit("task.answered", task, {"answer": answer})
+        return self._resume(task, f"The user answered your question ({task.question}): {answer}", question=None)
+
+    async def grant(self, task_id: str, approve: bool) -> TaskRecord:
+        """Yes/no to request_permission. A grant applies to this task only."""
+        task = self._get(task_id)
+        if task.status != "needs_permission":
+            return task
+        perm = task.metadata.get("permission") or {}
+        meta = dict(task.metadata)
+        if approve:
+            meta["grants"] = [*meta.get("grants", []), perm]
+            message = f"The user granted your permission request: {perm.get('what')}. Continue."
+        else:
+            message = (f"The user denied your permission request: {perm.get('what')}. Continue without it, "
+                       "or call submit_result explaining what you could not do.")
+        self._emit("task.permission", task, {"approved": approve, **perm})
+        task = self.registry.update(task_id, metadata=meta)
+        return self._resume(task, message)
+
+    async def follow_up(self, task_id: str, message: str) -> TaskRecord:
+        """More instructions for a finished, failed or interrupted task: the same session continues."""
+        task = self._get(task_id)
+        if task.status not in RESUMABLE:
+            return task
+        task = self.registry.update(task_id, metadata={**task.metadata,
+                                                       "follow_ups": [*task.metadata.get("follow_ups", []), message]})
+        return self._resume(task, f"Follow-up from the user: {message}", summary=None, error=None)
+
+    def _resume(self, task: TaskRecord, message: str, **changes: Any) -> TaskRecord:
+        meta = {k: v for k, v in task.metadata.items() if k not in ("pause", "result")}
+        meta["pending_message"] = message
+        task = self.registry.update(task.task_id, status="accepted", metadata=meta, **changes)
+        self._start(task)
+        return task
+
+    # ---- the sub-agent's side (called by the sub-agent MCP tools) ------------------------
+    def sub_progress(self, task_id: str, percent: int | None, text: str) -> TaskRecord:
+        task = self._get(task_id)
+        progress = task.progress if percent is None else max(0, min(100, int(percent)))
+        task = self.registry.update(task_id, progress=progress, progress_text=text[:200])
+        self._emit("task.progress", task, {"progress": task.progress, "text": task.progress_text})
+        return task
+
+    def sub_pause(self, task_id: str, state: str, **detail: Any) -> TaskRecord:
+        """ask_user / request_permission: takes effect when the agent ends its turn. state: needs_input | needs_permission"""
+        task = self._get(task_id)
+        return self.registry.update(task_id, metadata={**task.metadata, "pause": {**detail, "state": state}})
+
+    def sub_result(self, task_id: str, user_summary: str, details: str = "", artifacts: list | None = None) -> TaskRecord:
+        task = self._get(task_id)
+        result = {"user_summary": user_summary.strip(), "details": details, "artifacts": list(artifacts or [])}
+        return self.registry.update(task_id, metadata={**task.metadata, "result": result})
+
+    def _get(self, task_id: str) -> TaskRecord:
+        task = self.registry.get(task_id)
+        if task is None:
+            raise KeyError(f"unknown task {task_id}")
+        return task
+
     def publish_event(self, event_type: str, source: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> TaskEvent:
         return self.inbox.publish(event_type, source, payload=payload, **kwargs)
 
@@ -140,8 +218,25 @@ class Harness:
         current = self.registry.get(task_id)
         if current is None or current.status == "cancelled":
             return
-        current = self.registry.update(task_id, status="completed", progress=100, summary=str(summary))
-        self._emit("task.completed", current, {"summary": current.summary}, priority="high")
+        meta = {k: v for k, v in current.metadata.items() if k != "pending_message"}
+        result, pause = meta.get("result"), meta.get("pause")
+        if result:
+            current = self.registry.update(task_id, status="completed", progress=100, metadata=meta,
+                                           summary=result["user_summary"] or "Done.")
+            self._emit("task.completed", current, {"summary": current.summary}, priority="high")
+        elif pause:
+            state = pause["state"]
+            if state == "needs_permission":
+                meta["permission"] = {k: pause.get(k) for k in ("what", "why", "kind", "target")}
+            current = self.registry.update(task_id, status=state, metadata=meta, question=pause.get("question"))
+            self._emit(f"task.{state}", current, {k: v for k, v in pause.items() if k != "state"}, priority="high")
+        elif summary is not None:
+            current = self.registry.update(task_id, status="completed", progress=100, summary=str(summary), metadata=meta)
+            self._emit("task.completed", current, {"summary": current.summary}, priority="high")
+        else:
+            current = self.registry.update(task_id, status="failed", metadata=meta,
+                                           error="the sub-agent ended without submitting a result")
+            self._emit("task.failed", current, {"error": current.error}, priority="high")
 
     def _emit(self, event_type: str, task: TaskRecord, payload: dict[str, Any], priority: str = "normal") -> None:
         self.inbox.publish(

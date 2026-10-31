@@ -28,7 +28,14 @@ output_language = "ja"
 # maid-agent serve only (ARCHITECTURE §4, P1)
 routing = "tool"           # tool: delegate tool inside the reply call | keyword: maid_agent/router.py decides
 db = "runs/harness/tasks.sqlite3"
-fake_quick_s = 20          # the fake sub-agent's run time per tier, until Codex arrives in P3
+runner = "codex"           # codex: real sub-agents for quick/work tasks (P3) | fake: the P1 stand-in
+codex = "codex"            # Codex CLI; uses your ~/.codex config (model, provider, login)
+tasks_dir = "runs/tasks"   # one workspace per task, with its full event stream
+quick_effort = "low"       # quick: read-only + live web search
+quick_timeout_s = 300
+work_effort = "medium"     # work: writes only inside its task folder unless you grant more by voice
+work_timeout_s = 1800
+fake_quick_s = 20          # the fake sub-agent's run time per tier (runner = "fake", and computer tasks until P6)
 fake_work_s = 45
 fake_computer_s = 15
 quiet_gap_s = 1.5          # task news waits this long after anyone spoke

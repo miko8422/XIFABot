@@ -33,6 +33,9 @@ class CapabilityRegistry:
         if name in self._caps:
             self._caps[name].status = status
 
+    def remove(self, name: str) -> None:
+        self._caps.pop(name, None)
+
     def get(self, name: str) -> Capability | None:
         return self._caps.get(name)
 

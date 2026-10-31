@@ -90,6 +90,10 @@ class MaidTurns:
             return "じゃあ、始める。" if c.arguments.get("approve") else "わかった、やめておく。"
         if c.name == "look_at_screen":
             return "ちょっと見る。"
+        if c.name == "answer_task":
+            return "わかった、伝えておく。"
+        if c.name == "follow_up_task":
+            return "わかった、続けさせる。"
         return None
 
     def remember(self, turns: list[ChatTurn], mode: str) -> None:
@@ -106,19 +110,23 @@ class MaidTurns:
     def _backstop(self, text: str, active) -> list[ToolCall]:
         if wants_cancel(text) and len(active) == 1 and active[0].status != "waiting_confirmation":
             return [ToolCall("cancel_task", {"task_id": active[0].task_id})]
-        waiting = [t for t in active if t.status == "waiting_confirmation"]
-        if len(waiting) == 1 and time.time() - waiting[0].created_at < CONFIRM_WINDOW_S:
+        waiting = [t for t in active if t.status in ("waiting_confirmation", "needs_permission")]
+        if len(waiting) == 1 and time.time() - waiting[0].updated_at < CONFIRM_WINDOW_S:
             answer = yes_no(text)
             if answer is not None:
                 return [ToolCall("confirm_task", {"task_id": waiting[0].task_id, "approve": answer})]
         return []
 
-    def _resolve(self, task_id: str | None):
-        """The task the LLM named; if it mangled the id and only one task is active, that one."""
+    def _resolve(self, task_id: str | None, any_status: bool = False):
+        """The task the LLM named; if it mangled the id and only one task fits, that one
+        (one active task, or for a follow-up the most recent task)."""
         task = self.harness.registry.get(task_id) if task_id else None
         if task is not None:
             return task
-        active = [t for t in self.harness.registry.list(owner_id=self.owner_id) if t.status in ACTIVE]
+        tasks = self.harness.registry.list(owner_id=self.owner_id)  # newest first
+        if any_status:
+            return tasks[0] if tasks else None
+        active = [t for t in tasks if t.status in ACTIVE]
         return active[0] if len(active) == 1 else None
 
     async def _run_one(self, c: ToolCall, user_text: str) -> dict:
@@ -132,16 +140,23 @@ class MaidTurns:
                 owner_id=self.owner_id, worker_kind=f"fake-{tier}", requires_confirmation=tier == "computer",
                 metadata={"goal": goal, "tier": tier, "needs": needs, "routing": self.routing})
             return {"task_id": task.task_id, "status": task.status}
-        if c.name in ("cancel_task", "confirm_task"):
-            task = self._resolve(a.get("task_id"))
+        if c.name in ("cancel_task", "confirm_task", "answer_task", "follow_up_task"):
+            task = self._resolve(a.get("task_id"), any_status=c.name == "follow_up_task")
             if task is None:
                 return {"error": f"no such task {a.get('task_id')!r}"}
+            h = self.harness
             if c.name == "cancel_task":
-                task = await self.harness.cancel(task.task_id)
+                task = await h.cancel(task.task_id)
+            elif c.name == "answer_task":
+                task = await h.answer(task.task_id, str(a.get("answer") or user_text))
+            elif c.name == "follow_up_task":
+                task = await h.follow_up(task.task_id, str(a.get("message") or user_text))
+            elif task.status == "needs_permission":
+                task = await h.grant(task.task_id, bool(a.get("approve")))
             elif a.get("approve"):
-                task = await self.harness.confirm(task.task_id)
+                task = await h.confirm(task.task_id)
             else:
-                task = await self.harness.cancel(task.task_id, reason="declined by user")
+                task = await h.cancel(task.task_id, reason="declined by user")
             return {"task_id": task.task_id, "status": task.status}
         if c.name == "look_at_screen":
             if self.look is None:

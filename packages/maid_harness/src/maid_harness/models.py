@@ -11,6 +11,7 @@ TaskStatus = Literal[
     "waiting_confirmation",
     "running",
     "needs_input",
+    "needs_permission",  # the sub-agent asked for more than its sandbox (ARCHITECTURE §5.5)
     "completed",
     "failed",
     "cancelled",
@@ -59,6 +60,13 @@ class TaskRecord:
     confirmed: bool = False
     merged_into: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def goal(self) -> str:
+        """What the task is about now: the latest follow-up, else the delegated goal, else the raw request."""
+        follow = self.metadata.get("follow_ups") or []
+        base = self.metadata.get("goal") or self.request
+        return f"{base} -> follow-up: {follow[-1]}" if follow else base
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

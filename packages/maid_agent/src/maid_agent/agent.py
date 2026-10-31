@@ -1,8 +1,8 @@
 """`maid-agent serve`: the Maid inside the maid_voice gateway (ARCHITECTURE §6, one process).
 
-  voice turn ──▶ reply LLM (+ delegate tools, T1 state block) ──▶ MaidTurns.run ──▶ Harness
-                                                                                     │ events
-  ctl.notify ◀── SpeechArbiter (waits for a pause, merges) ◀── inbox ◀───────────────┘
+  voice turn ──▶ reply LLM (+ delegate tools, T1 state block) ──▶ MaidTurns.run ──▶ Harness ──▶ codex exec
+                                                                                     │ events      │ maid MCP
+  ctl.notify ◀── SpeechArbiter (waits for a pause, merges) ◀── inbox ◀───────────────┴─────────────┘
   ctl.say    ◀── ScreenProactive (unchanged until P4)
 
 Config comes from the [agent] section of maid_voice's config file.
@@ -15,7 +15,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from maid_harness import Capability, Harness
+from maid_harness.codex_runner import PROFILES, CodexRunner, Profile
 from maid_harness.models import TaskEvent, TaskRecord
+from maid_harness.subagent_mcp import SubAgentTools
 from maid_harness.workers import FakeSubAgent
 
 from .arbiter import ArbiterConfig, SpeechArbiter
@@ -29,7 +31,14 @@ class AgentConfig:
     db: str = "runs/harness/tasks.sqlite3"     # relative to the maid_agent package
     memory_db: str = "runs/maid/memory.sqlite3"  # the Maid's own file: conversation log (P2), memory bank (P5)
     restore_turns: int = 8                     # messages put back into her history on startup
-    fake_quick_s: float = 20.0                 # how long the fake sub-agent takes per tier (P1 only)
+    runner: str = "codex"                      # codex: real sub-agents for quick/work (P3) | fake: the P1 stand-in
+    codex: str = "codex"                       # the Codex CLI
+    tasks_dir: str = "runs/tasks"              # one workspace per task: events.jsonl, stderr.log, its files
+    quick_effort: str = "low"
+    quick_timeout_s: float = 300.0
+    work_effort: str = "medium"
+    work_timeout_s: float = 1800.0
+    fake_quick_s: float = 20.0                 # how long the fake sub-agent takes per tier
     fake_work_s: float = 45.0
     fake_computer_s: float = 15.0
     quiet_gap_s: float = 1.5
@@ -41,7 +50,7 @@ class AgentConfig:
 
 
 def task_view(t: TaskRecord) -> dict:
-    return {"task_id": t.task_id, "goal": t.metadata.get("goal") or t.request, "tier": t.metadata.get("tier"),
+    return {"task_id": t.task_id, "goal": t.goal, "tier": t.metadata.get("tier"),
             "status": t.status, "progress": t.progress, "progress_text": t.progress_text,
             "summary": t.summary, "error": t.error, "created_at": t.created_at}
 
@@ -51,18 +60,50 @@ class MaidAgent:
         self.root = root
         self.cfg = cfg
         self.screen = screen
-        durations = {"quick": cfg.fake_quick_s, "work": cfg.fake_work_s, "computer": cfg.fake_computer_s}
-        self.harness = Harness(root / cfg.db, worker_factory=lambda task: FakeSubAgent(
-            durations.get(task.metadata.get("tier"), cfg.fake_quick_s)))
+        self.harness = Harness(root / cfg.db, worker_factory=self._worker)
+        self.tools: SubAgentTools | None = None
+        self.profiles = {
+            "quick": Profile(**{**PROFILES["quick"].__dict__, "effort": cfg.quick_effort, "timeout_s": cfg.quick_timeout_s}),
+            "work": Profile(**{**PROFILES["work"].__dict__, "effort": cfg.work_effort, "timeout_s": cfg.work_timeout_s}),
+        }
         self.arbiter = SpeechArbiter(self.harness, ArbiterConfig(cfg.quiet_gap_s, cfg.heartbeat_s),
                                      log_dir=root / "runs" / "agent")
         self.turns = MaidTurns(self.harness, cfg.routing, log_dir=root / "runs" / "agent",
                                look=self._look_when_quiet if screen else None, followup=self.arbiter.answer,
                                facts=screen.facts if screen else None)
 
+    def _worker(self, task: TaskRecord):
+        tier = task.metadata.get("tier", "quick")
+        if self.tools is not None and tier in self.profiles:
+            return CodexRunner(self.harness, self.tools, self.root / self.cfg.tasks_dir, self.profiles[tier], self.cfg.codex)
+        durations = {"quick": self.cfg.fake_quick_s, "work": self.cfg.fake_work_s, "computer": self.cfg.fake_computer_s}
+        return FakeSubAgent(durations.get(tier, self.cfg.fake_quick_s))
+
+    def _register_runners(self) -> None:
+        """What she can hand off, per tier. computer stays simulated until P6."""
+        caps = self.harness.capabilities
+        if self.tools is None:
+            return  # the harness default: one simulated sub_agents capability
+        caps.remove("sub_agents")
+        caps.register(Capability(
+            "research", "live", "hands questions to a background sub-agent with live web search: weather, news, "
+            "prices, docs, coding questions (tier quick, read-only, usually under a minute or two)",
+            ("delegate", "answer_task", "follow_up_task"), "it may ask the user a question back"))
+        caps.register(Capability(
+            "work", "live", "hands real work to a background sub-agent: write code or files, run commands and tests "
+            "(tier work), inside its own task folder; anything outside needs the user's permission",
+            ("delegate", "answer_task", "follow_up_task"), "it asks for permission by voice before touching anything else"))
+        caps.register(Capability(
+            "computer_use", "simulated", "operating apps and the GUI (tier computer)", ("delegate",),
+            "practice mode: nothing is really operated until P6"))
+
     # ---- extension API (called by maid_voice.app.serve) ----------------
     async def start(self, ctx) -> list[asyncio.Task]:
         self.ctx = ctx
+        if self.cfg.runner == "codex":
+            self.tools = SubAgentTools(self.harness)
+            await self.tools.start()
+            self._register_runners()
         self.conversation = Conversation(ConversationLog(self.root / self.cfg.memory_db), ctx.ctl.session_id)
         self.turns.conversation = self.conversation
         ctx.ctl.history = self.conversation.restore(min(self.cfg.restore_turns, 2 * ctx.ctl.history_turns))
@@ -70,7 +111,8 @@ class MaidAgent:
         self.harness.inbox.subscribe(self._on_event)
         interrupted = self.harness.recover()  # after the arbiter subscribed, so she mentions them once
         ctx.info.update(agent=self._info())
-        print(f"maid agent: routing={self.cfg.routing}, fake sub-agent, db {self.root / self.cfg.db}, "
+        runner = f"codex sub-agents (tools on :{self.tools.port})" if self.tools else "fake sub-agent"
+        print(f"maid agent: routing={self.cfg.routing}, {runner}, db {self.root / self.cfg.db}, "
               f"{len(ctx.ctl.history)} message(s) of conversation restored"
               + (f", {len(interrupted)} task(s) interrupted by the last restart" if interrupted else ""), flush=True)
         tasks = [asyncio.create_task(self.arbiter.run(ctx))]

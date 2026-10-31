@@ -47,8 +47,25 @@ _SCHEMAS = [
             "task_id": {"type": "string"}}, "required": ["task_id"]},
     }},
     {"type": "function", "function": {
+        "name": "answer_task",
+        "description": "Pass the user's answer to a task that asked a question (あきらの答え待ち in the state).",
+        "parameters": {"type": "object", "properties": {
+            "task_id": {"type": "string"},
+            "answer": {"type": "string", "description": "The user's answer in English, complete and self-contained."}},
+            "required": ["task_id", "answer"]},
+    }},
+    {"type": "function", "function": {
+        "name": "follow_up_task",
+        "description": ("More instructions for a finished, failed or interrupted task from the state, continuing the same "
+                        "sub-agent session: 'also check X', 'do it again with Y', 'continue the interrupted one'."),
+        "parameters": {"type": "object", "properties": {
+            "task_id": {"type": "string"},
+            "message": {"type": "string", "description": "The instruction in English, self-contained."}},
+            "required": ["task_id", "message"]},
+    }},
+    {"type": "function", "function": {
         "name": "confirm_task",
-        "description": "Answer a task that is waiting for the user's confirmation, after the user said yes or no.",
+        "description": ("The user's yes or no to a task waiting for confirmation (確認待ち) or for permission (許可待ち)."),
         "parameters": {"type": "object", "properties": {
             "task_id": {"type": "string"}, "approve": {"type": "boolean"}}, "required": ["task_id", "approve"]},
     }},
@@ -86,14 +103,15 @@ INSTRUCTIONS = """# 作業の頼まれごと
 そのときは、まず日本語でごく短く引き受けて（例「わかった、調べてくる。」）、同じ返答の中で delegate を呼ぶ。goal は英語で、あきらの言った名前や条件を全部入れる。
 雑談や、下の「今の作業」でわかることには delegate を使わない。
 画面やアプリを操作する作業も delegate を呼ぶ（tier は computer）。そのときは引き受けるのではなく「始めていい？」と聞く。作業は確認待ちになり、あきらが答えるまで始まらない。
-あきらが作業をやめてと言ったら、止めると言うだけでなく必ず cancel_task を呼ぶ。確認待ちの作業にあきらが答えたら confirm_task を呼ぶ。
+あきらが作業をやめてと言ったら、止めると言うだけでなく必ず cancel_task を呼ぶ。確認待ちや許可待ちの作業にあきらが答えたら confirm_task を呼ぶ。
+作業からの質問にあきらが答えたら answer_task を、終わった作業や中断した作業への追加の頼み（続けて、もう一度、ついでに）は新しい delegate ではなく follow_up_task を呼ぶ。
 作業が終わったとか、アプリを開いたとか、報告がないことは言わない。進み具合は「今の作業」に書いてあることだけを伝える。
 画面のことを聞かれたら look_at_screen を呼んで「ちょっと見る」とだけ言う。見る前に中身を言わない。答えは見たあとに伝える。
 英語のアプリ名やファイル名は、カタカナで言う。"""
 
-ACTIVE = ("accepted", "waiting_confirmation", "running", "needs_input")
+ACTIVE = ("accepted", "waiting_confirmation", "running", "needs_input", "needs_permission")
 _STATUS_JA = {"accepted": "受付済み", "waiting_confirmation": "あきらの確認待ち", "running": "実行中",
-              "needs_input": "あきらの答え待ち", "completed": "完了", "failed": "失敗", "cancelled": "中止",
+              "needs_input": "あきらの答え待ち", "needs_permission": "あきらの許可待ち", "completed": "完了", "failed": "失敗", "cancelled": "中止",
               "interrupted": "再起動で中断"}
 
 
@@ -108,16 +126,17 @@ def state_block(tasks: list[TaskRecord], now: float | None = None, recent: int =
     done = sorted((t for t in tasks if t.status not in ACTIVE), key=lambda t: -t.updated_at)[:recent]
     lines = []
     for t in sorted(active, key=lambda t: -t.created_at) + done:
-        goal = t.metadata.get("goal") or t.request
-        line = f"- {t.task_id}: {goal} / {_STATUS_JA.get(t.status, t.status)} / 依頼 {_ago(now - t.created_at)}"
+        line = f"- {t.task_id}: {t.goal} / {_STATUS_JA.get(t.status, t.status)} / 依頼 {_ago(now - t.created_at)}"
         if t.status == "running":
             line += f" / {t.progress}%" + (f" {t.progress_text}" if t.progress_text else "")
         if t.status == "completed" and t.summary:
             line += f" / 結果: {t.summary}"
         if t.status == "failed" and t.error:
             line += f" / 理由: {t.error}"
-        if t.question:
+        if t.status == "needs_input" and t.question:
             line += f" / 質問: {t.question}"
+        if t.status == "needs_permission" and (perm := t.metadata.get("permission")):
+            line += f" / 頼まれている許可: {perm.get('what')}（理由: {perm.get('why')}）"
         lines.append(line)
     out = "# 今の作業\n" + ("\n".join(lines) if lines else "（なし）")
     if facts:

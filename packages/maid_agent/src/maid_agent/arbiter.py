@@ -25,7 +25,7 @@ from pathlib import Path
 from maid_harness import Harness
 from maid_harness.models import TaskEvent
 
-SPOKEN = {"task.completed", "task.failed", "task.needs_input", "task.interrupted"}
+SPOKEN = {"task.completed", "task.failed", "task.needs_input", "task.needs_permission", "task.interrupted"}
 HEADER = "（あきらの発言ではない。作業の知らせや、確かめた結果）次のことを伝えて:"
 
 
@@ -62,10 +62,13 @@ class SpeechArbiter:
         if event.type not in SPOKEN or not event.task_id:
             return
         task = self.harness.registry.get(event.task_id)
-        goal = (task.metadata.get("goal") or task.request) if task else ""
+        goal = task.goal if task else ""
         p = event.payload
         detail = {"task.completed": p.get("summary"), "task.failed": p.get("error"),
-                  "task.needs_input": p.get("question"), "task.interrupted": p.get("reason")}[event.type]
+                  "task.needs_input": f"the sub-agent asks the user: {p.get('question')}",
+                  "task.needs_permission": f"the sub-agent asks permission to {p.get('what')} (because {p.get('why')}); "
+                                           "ask the user yes or no",
+                  "task.interrupted": p.get("reason")}[event.type]
         kind = event.type.split(".", 1)[1]
         # a newer state for the same task replaces an older one still waiting
         self.pending = [i for i in self.pending if i.task_id != event.task_id]
@@ -78,7 +81,7 @@ class SpeechArbiter:
             last = self._heartbeat.setdefault(t.task_id, t.created_at)
             if now - last >= self.cfg.heartbeat_s and not any(i.task_id == t.task_id for i in self.pending):
                 self._heartbeat[t.task_id] = now
-                goal = t.metadata.get("goal") or t.request
+                goal = t.goal
                 out.append(Item("progress", t.task_id, f"[still running, {int((now - t.created_at) // 60)} min] "
                                 f"{goal}: {t.progress}% {t.progress_text}".rstrip()))
         return out
