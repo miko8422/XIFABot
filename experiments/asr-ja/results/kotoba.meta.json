@@ -1,0 +1,42 @@
+{
+  "model": "kotoba",
+  "config": {
+    "model": "kotoba",
+    "repo": "kaiinui/kotoba-whisper-v2.0-mlx",
+    "revision": "1a5ac6e52394898ef8996212e849d964e0dfb9ae",
+    "path": "experiments/asr-ja/models/kotoba",
+    "language": "ja",
+    "temperature": 0,
+    "condition_on_previous_text": false
+  },
+  "started_utc": "2026-10-27T13:12:51.416855+00:00",
+  "platform": "macOS-26.5.2-arm64-arm-64bit",
+  "chip": "Apple M5 Pro",
+  "load_ms": 1066.881916980492,
+  "warmups": [
+    {
+      "id": "nat212_046",
+      "ms": 3350.347708008485
+    },
+    {
+      "id": "fleurs_2756191960065248745",
+      "ms": 235.3782500140369
+    },
+    {
+      "id": "fleurs_16214330299007518305",
+      "ms": 199.39258397789672
+    }
+  ],
+  "script_sha256": "4fbc4eef96f3bf8d5ae5531991a9d2da9e0a256c5ccf30ac8b040bf4f2b7b28a",
+  "manifest_sha256": "4543d7d319a3335ff7dc6eb72102a0c48d84b684e890648d03c4f99287efc5fd",
+  "versions": {
+    "mlx": "0.32.4",
+    "mlx-audio": "0.6.1",
+    "mlx-whisper": "0.4.3",
+    "sherpa-onnx": "2.0.0",
+    "numpy": "2.5.4",
+    "soundfile": "0.14.0"
+  },
+  "finished_utc": "2026-10-27T13:14:11.451511+00:00",
+  "peak_rss_mb": 1954.734375
+}

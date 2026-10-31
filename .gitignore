@@ -1,0 +1,30 @@
+# Local configuration and environments
+.env
+.env.*
+!.env.example
+.venv/
+**/.venv/
+
+# Runtime output and private assets
+**/runs/
+**/voices/
+private/
+models/
+*.sqlite
+*.sqlite-*
+
+# Python/build output
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ASR experiment downloads and generated data
+experiments/**/data/source/
+experiments/**/data/audio/
+experiments/**/.cache/

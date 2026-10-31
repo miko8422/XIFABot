@@ -1,0 +1,44 @@
+{
+  "model": "reazon",
+  "config": {
+    "model": "reazon",
+    "repo": "reazon-research/reazonspeech-k2-v2",
+    "revision": "291488c8151be24d7da4bf7af26e533fad96e407",
+    "path": "experiments/asr-ja/models/reazon",
+    "precision": "int8-fp32",
+    "threads": 4,
+    "padding_seconds_each_side": 0.9,
+    "decoding": "greedy_search",
+    "device": "cpu"
+  },
+  "started_utc": "2026-10-27T13:12:22.076425+00:00",
+  "platform": "macOS-26.5.2-arm64-arm-64bit",
+  "chip": "Apple M5 Pro",
+  "load_ms": 761.2506250152364,
+  "warmups": [
+    {
+      "id": "nat212_046",
+      "ms": 84.70000000670552
+    },
+    {
+      "id": "fleurs_2756191960065248745",
+      "ms": 161.31583400419913
+    },
+    {
+      "id": "fleurs_16214330299007518305",
+      "ms": 108.61791699426249
+    }
+  ],
+  "script_sha256": "4fbc4eef96f3bf8d5ae5531991a9d2da9e0a256c5ccf30ac8b040bf4f2b7b28a",
+  "manifest_sha256": "4543d7d319a3335ff7dc6eb72102a0c48d84b684e890648d03c4f99287efc5fd",
+  "versions": {
+    "mlx": "0.32.4",
+    "mlx-audio": "0.6.1",
+    "mlx-whisper": "0.4.3",
+    "sherpa-onnx": "2.0.0",
+    "numpy": "2.5.4",
+    "soundfile": "0.14.0"
+  },
+  "finished_utc": "2026-10-27T13:12:46.441320+00:00",
+  "peak_rss_mb": 783.46875
+}

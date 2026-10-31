@@ -1,0 +1,18 @@
+[project]
+name = "xifabot-asr-ja-experiment"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "mlx-audio==0.6.1",
+  "mlx-whisper",
+  "sherpa-onnx==2.0.0",
+  "soundfile",
+  "scipy",
+  "httpx",
+  "huggingface-hub",
+  "rapidfuzz",
+  "pykakasi",
+]
+
+[tool.uv]
+package = false

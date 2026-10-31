@@ -1,0 +1,5 @@
+voices/
+runs/
+.venv/
+__pycache__/
+*.wav
