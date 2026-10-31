@@ -14,6 +14,7 @@ TaskStatus = Literal[
     "completed",
     "failed",
     "cancelled",
+    "interrupted",  # was running when the Maid stopped (ARCHITECTURE §6)
 ]
 
 

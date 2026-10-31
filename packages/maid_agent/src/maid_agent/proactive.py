@@ -72,6 +72,7 @@ class ScreenProactive:
         self._wake = asyncio.Event()
         self._last_spoke: float | None = None
         self._busy = False
+        self._last_seen: tuple[float, str, object] | None = None  # (time, app, Observation): the T1 screen fact
 
     # ---- extension API (called by maid_voice.app.serve) ----------------
     async def start(self, ctx) -> list[asyncio.Task]:
@@ -114,6 +115,28 @@ class ScreenProactive:
         self.ctx.info.update(screen=self._info())
         await self.ctx.broadcast(self.ctx.info)
         return True
+
+    # ---- asked by the reply call (look_at_screen) and the state block ---------
+    async def look(self, question: str = "") -> str:
+        """Look now, on request: no change detector, no cooldown. Returns what was seen, in English."""
+        image = await asyncio.to_thread(self.observer.grab_main)
+        app = self.observer.plat.foreground().app
+        obs = await self.vision.describe(image, app, question)
+        self._last_seen = (time.time(), app, obs)
+        await self.ctx.broadcast({"type": "screen.decision", "time": datetime.now().isoformat(timespec="seconds"),
+                                  "app": app, "manual": True, "action": "asked", "reason": question,
+                                  "activity": obs.activity, "notable": obs.notable, "vision_ms": round(obs.ms)})
+        if obs.sensitive:
+            return f"front app {app}; something private is on screen, so do not describe it"
+        return f"front app {app}; {obs.activity}" + (f"; notable: {obs.notable}" if obs.notable else "") \
+            + (f"; answer: {obs.answer}" if obs.answer else "")
+
+    def facts(self, max_age_s: float = 600.0) -> list[str]:
+        if self._last_seen is None or time.time() - self._last_seen[0] > max_age_s:
+            return []
+        t, app, obs = self._last_seen
+        what = "something private (not described)" if obs.sensitive else obs.activity
+        return [f"画面（{ago(time.time() - t)}に見た）: {app} / {what}"]
 
     # ---- observer thread -> event loop ---------------------------------
     def _on_settled_thread(self, s: Settled) -> None:
@@ -177,6 +200,7 @@ class ScreenProactive:
         await self.ctx.broadcast({"type": "screen.stage", "stage": "looking"})
         image = await asyncio.to_thread(self.observer.grab_main)  # full resolution, screen is settled
         obs = await self.vision.describe(image, s.app)
+        self._last_seen = (time.time(), s.app, obs)
         rec.update(vision_ms=round(obs.ms), activity=obs.activity, notable=obs.notable,
                    worth_mentioning=obs.worth_mentioning, sensitive=obs.sensitive)
         if obs.sensitive:

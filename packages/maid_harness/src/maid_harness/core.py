@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+from .capabilities import Capability, CapabilityRegistry
 from .inbox import EventInbox
 from .models import Route, TaskEvent, TaskRecord
 from .registry import TaskRegistry
@@ -26,6 +27,26 @@ class Harness:
         self.inbox = EventInbox(self.registry)
         self.worker_factory = worker_factory or (lambda task: DemoWorker(worker_delay_s))
         self._running: dict[str, asyncio.Task[None]] = {}
+        self.capabilities = CapabilityRegistry()
+        self.capabilities.register(Capability(
+            "tasks", "live", "knows every task's state, progress and result; can cancel a task",
+            ("cancel_task", "confirm_task")))
+        # whoever installs a real runner sets this live (P3); the default workers do no real work
+        self.capabilities.register(Capability(
+            "sub_agents", "simulated",
+            "hands heavy work to a background sub-agent: web search and research (weather, news, docs), "
+            "coding questions, changing files, running commands, operating apps",
+            ("delegate",), "practice mode: no real work is done and results are not real until P3"))
+
+    def recover(self) -> list[TaskRecord]:
+        """On startup: tasks left active by the previous process are marked `interrupted` (§6)."""
+        out = []
+        for task in self.registry.list():
+            if task.status in {"accepted", "running", "needs_input", "waiting_confirmation"}:
+                task = self.registry.update(task.task_id, status="interrupted", error="the Maid was restarted")
+                self._emit("task.interrupted", task, {"reason": task.error})
+                out.append(task)
+        return out
 
     async def submit(
         self,
@@ -64,16 +85,16 @@ class Harness:
         self._start(task)
         return task
 
-    async def cancel(self, task_id: str) -> TaskRecord:
+    async def cancel(self, task_id: str, reason: str = "cancelled by user") -> TaskRecord:
         task = self.registry.get(task_id)
         if task is None:
             raise KeyError(f"unknown task {task_id}")
         running = self._running.get(task_id)
         if running and not running.done():
             running.cancel()
-        if task.status not in {"completed", "failed", "cancelled"}:
-            task = self.registry.update(task_id, status="cancelled", error="cancelled by user")
-            self._emit("task.cancelled", task, {"reason": "cancelled by user"}, priority="high")
+        if task.status not in {"completed", "failed", "cancelled", "interrupted"}:
+            task = self.registry.update(task_id, status="cancelled", error=reason)
+            self._emit("task.cancelled", task, {"reason": reason}, priority="high")
         return task
 
     def publish_event(self, event_type: str, source: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> TaskEvent:

@@ -7,8 +7,8 @@ import pytest
 from maid_voice.asr import FinalTranscript
 from maid_voice.audio import PlaybackQueue
 from maid_voice.config import VoiceProfile
-from maid_voice.controller import TurnController
-from maid_voice.llm import LLMDelta
+from maid_voice.controller import TurnController, TurnPlan
+from maid_voice.llm import LLMDelta, ToolCall
 from maid_voice.metrics import now_ns
 from maid_voice.segmenter import ClauseSegmenter
 
@@ -31,13 +31,17 @@ class FakeASR:
 class FakeLLM:
     model = "fake-llm"
 
-    def __init__(self, pieces=("はい、", "わかった。", "すぐやるわ。"), delay=0.01):
-        self.pieces, self.delay = pieces, delay
+    def __init__(self, pieces=("はい、", "わかった。", "すぐやるわ。"), delay=0.01, calls=()):
+        self.pieces, self.delay, self.calls = pieces, delay, calls
+        self.requests = []
 
-    async def stream_response(self, history, user_text):
+    async def stream_response(self, history, user_text, **kw):
+        self.requests.append({"user_text": user_text, **kw})
         for p in self.pieces:
             await asyncio.sleep(self.delay)
             yield LLMDelta(text=p)
+        for c in self.calls:
+            yield LLMDelta(tool_call=c)
         yield LLMDelta(done=True)
 
 
@@ -231,3 +235,81 @@ async def test_say_speaks_a_fixed_line_and_is_refused_during_a_turn():
     await asyncio.sleep(0.05)
     assert ctl.say("割り込み") is None, "must not talk over a turn in progress"
     await settle(ctl, timeout=5)
+
+
+class FakeHooks:
+    def __init__(self, ack="わかった、やっておく。"):
+        self.ack_line, self.ran, self.plans = ack, [], []
+
+    async def plan(self, text, kind):
+        self.plans.append((text, kind))
+        return TurnPlan(context=f"ctx:{kind}", tools=[{"type": "function"}] if kind == "turn" else None)
+
+    def ack(self, calls):
+        return self.ack_line
+
+    async def run(self, calls, user_text):
+        self.ran.append(([c.name for c in calls], user_text))
+
+
+DELEGATE = ToolCall("delegate", {"goal": "search", "tier": "quick"})
+
+
+@pytest.mark.asyncio
+async def test_tool_call_runs_after_a_committed_turn_and_reaches_the_trace():
+    llm = FakeLLM(pieces=("わかった、", "調べてくる。"), calls=(DELEGATE,))
+    ctl, _, events = make(llm=llm)
+    ctl.hooks = hooks = FakeHooks()
+    await submit(ctl)
+    await settle(ctl)
+    await asyncio.sleep(0.02)
+    assert hooks.ran == [(["delegate"], "hello")]
+    assert llm.requests[-1]["context"] == "ctx:turn" and llm.requests[-1]["tools"]
+    rec = ctl.completed[-1]
+    assert rec["tool_calls"] == [{"name": "delegate", "arguments": {"goal": "search", "tier": "quick"}}]
+    assert rec["assistant_text"] == "わかった、調べてくる。", "she spoke, so no fixed acknowledgement"
+    assert any(e["type"] == "tool_calls" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_tool_call_without_text_speaks_the_fixed_acknowledgement():
+    ctl, _, _ = make(llm=FakeLLM(pieces=(), calls=(DELEGATE,)))
+    ctl.hooks = FakeHooks()
+    await submit(ctl)
+    await settle(ctl)
+    rec = ctl.completed[-1]
+    assert rec["assistant_text"] == "わかった、やっておく。" and rec["first_sound_ms"] is not None
+
+
+@pytest.mark.asyncio
+async def test_speculative_tool_calls_wait_for_commit_and_die_with_a_dropped_turn():
+    ctl, _, _ = make(llm=FakeLLM(pieces=("ん。",), calls=(DELEGATE,), delay=0.001))
+    ctl.hooks = hooks = FakeHooks()
+    t = now_ns()
+    ctl.submit(np.zeros(1600, dtype="float32"), 16000, t, None, held=True, mode="handsfree")
+    await asyncio.sleep(0.1)  # LLM finished, playback held, not committed
+    assert hooks.ran == [] and ctl._deferred
+    await ctl.stop("speculation_dropped")  # the user kept talking
+    await settle(ctl)
+    assert hooks.ran == [] and not ctl._deferred
+
+    ctl.submit(np.zeros(1600, dtype="float32"), 16000, t, None, held=True, mode="handsfree")
+    await asyncio.sleep(0.1)
+    assert hooks.ran == []
+    assert ctl.commit(ctl.active_gen, now_ns())
+    await settle(ctl)
+    assert hooks.ran == [(["delegate"], "hello")]
+
+
+@pytest.mark.asyncio
+async def test_notify_goes_through_the_llm_and_keeps_only_her_line_in_history():
+    llm = FakeLLM(pieces=("さっきの、", "終わったって。"))
+    ctl, _, _ = make(llm=llm)
+    ctl.hooks = hooks = FakeHooks()
+    task = ctl.notify("[completed] search: done")
+    assert task is not None and ctl.notify("again") is None
+    await settle(ctl)
+    rec = ctl.completed[-1]
+    assert rec["mode"] == "notice" and rec["notice"] == "[completed] search: done" and rec["error"] is None
+    assert hooks.plans[-1] == ("[completed] search: done", "notice") and llm.requests[-1]["tools"] is None
+    assert [t.role for t in ctl.history] == ["assistant"] and ctl.history[0].content == "さっきの、終わったって。"

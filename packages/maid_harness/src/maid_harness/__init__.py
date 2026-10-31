@@ -4,9 +4,10 @@ Nothing here imports `maid_agent`. The Maid depends on this package, never the
 other way round.
 """
 
+from .capabilities import Capability, CapabilityRegistry
 from .core import Harness
 from .inbox import EventInbox
 from .models import Route, TaskEvent, TaskRecord, TaskStatus
 from .registry import TaskRegistry
 
-__all__ = ["EventInbox", "Harness", "Route", "TaskEvent", "TaskRecord", "TaskRegistry", "TaskStatus"]
+__all__ = ["Capability", "CapabilityRegistry", "EventInbox", "Harness", "Route", "TaskEvent", "TaskRecord", "TaskRegistry", "TaskStatus"]

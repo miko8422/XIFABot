@@ -47,6 +47,8 @@ class TurnTrace:
     tts_model: str = ""
     voice_profile: str = ""
     output_device: str = ""
+    notice: str = ""  # mode=notice: the event prompt she put into her own words
+    tool_calls: list[dict] = field(default_factory=list)  # what the reply LLM called (name + arguments)
     usage: dict | None = None
     est_cost_usd: float | None = None
     cancelled: bool = False

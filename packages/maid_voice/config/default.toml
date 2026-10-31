@@ -11,23 +11,33 @@ save_raw_audio = false     # opt-in debug capture only
 provider = "omlx"
 base_url = "http://127.0.0.1:9800"
 model = "mlx-community--Qwen3-ASR-0.6B-8bit"
-language = "ja"            # Japanese input
+language = ""              # auto-detect: Japanese or English input (ARCHITECTURE §4.5); "ja" to pin
 
 [llm]
 provider = "deepseek"      # openai-compatible chat completions
 base_url_env = "BASE_URL"
 api_key_env = "API_KEY"
 model = "deepseek-flash"   # DeepSeek V4.1 Flash
-max_tokens = 120
+max_tokens = 220          # room for a spoken line plus delegate arguments (the probe saw goals of ~90 tokens)
 # thinking must be off: with it on, 2/5 probe turns spent the whole budget reasoning
 extra_body = { thinking = { type = "disabled" }, reasoning_effort = "low" }
 history_turns = 4
 output_language = "ja"
 
+[agent]
+# maid-agent serve only (ARCHITECTURE §4, P1)
+routing = "tool"           # tool: delegate tool inside the reply call | keyword: maid_agent/router.py decides
+db = "runs/harness/tasks.sqlite3"
+fake_quick_s = 20          # the fake sub-agent's run time per tier, until Codex arrives in P3
+fake_work_s = 45
+fake_computer_s = 15
+quiet_gap_s = 1.5          # task news waits this long after anyone spoke
+heartbeat_s = 180          # unprompted progress for a long task at most this often
+
 [persona]
 # role card + expressions mined from her lines (scripts/build_expressions.py); off = the built-in prompt in llm.py
 enabled = true
-card = "../maid_agent/persona/natsume.v1.toml"
+card = "../maid_agent/persona/natsume.v2.toml"
 expressions = "../maid_agent/persona/natsume_expressions.jsonl"
 top_k = 4
 

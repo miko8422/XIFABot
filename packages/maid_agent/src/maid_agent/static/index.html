@@ -63,7 +63,11 @@
   .scr { font-size: 12px; } .scr b { font-weight: 600; }
   #scrlog { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow: auto; margin-top: 8px; }
   #scrlog div { border-top: 1px solid var(--line); padding-top: 4px; font-size: 12px; }
-  .turn.proactive .u { color: var(--accent); }
+  .turn.proactive .u, .turn.notice .u { color: var(--accent); }
+  #tasks { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; font-size: 12px; }
+  #tasks div { border-top: 1px solid var(--line); padding-top: 4px; }
+  #tasks button { font-size: 11px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--line); background: transparent; color: var(--ink); cursor: pointer; }
+  .calls { font-size: 12px; color: var(--llm); }
   select { width: 100%; padding: 4px; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; }
 </style>
 </head>
@@ -91,6 +95,12 @@
     <div id="log" class="panel" style="margin-top:8px"></div>
   </section>
   <aside style="display:flex;flex-direction:column;gap:12px">
+    <div class="panel">
+      <div class="row" style="justify-content:space-between"><b>Tasks</b><span id="routing" class="pill">–</span></div>
+      <label class="sub row" style="margin-top:6px"><input type="checkbox" id="mute"> mute task news (held, not dropped)</label>
+      <div id="caps" class="row" style="margin-top:6px"></div>
+      <div id="tasks"><span class="sub">none yet</span></div>
+    </div>
     <div class="panel">
       <div class="row" style="justify-content:space-between"><b>Screen</b><span id="scrState" class="pill">–</span></div>
       <label class="sub row" style="margin-top:6px"><input type="checkbox" id="scrWatch"> watch main screen</label>
@@ -225,6 +235,11 @@ ws.onmessage = (m) => {
       $("ptt").style.opacity = mode === "ptt" ? 1 : .35;
       $("sil").value = e.end_silence_ms; $("silv").textContent = e.end_silence_ms;
       $("barge").checked = !!e.barge_in;
+      if (e.agent) {
+        $("routing").textContent = "routing: " + e.agent.routing; $("mute").checked = e.agent.muted;
+        $("caps").innerHTML = (e.agent.capabilities || []).map((c) =>
+          `<span class="pill${c.status === "live" ? " speak" : ""}" title="${esc(c.note)}">${esc(c.name)}: ${c.status}</span>`).join("");
+      }
       if (e.screen) {
         $("scrWatch").checked = e.screen.watch; $("scrSpeak").checked = e.screen.speak;
         $("cd").value = Math.round(e.screen.cooldown_s / 60); $("cdv").textContent = $("cd").value;
@@ -249,6 +264,25 @@ ws.onmessage = (m) => {
       el.querySelector(".tag").innerHTML = `<span class="err">${e.message}</span>`;
       break;
     }
+    case "tasks": {
+      const ago = (t) => { const s = Date.now() / 1000 - t; return s < 60 ? Math.round(s) + "s" : Math.round(s / 60) + "m"; };
+      const live = ["accepted", "running", "waiting_confirmation", "needs_input"];
+      $("tasks").innerHTML = e.tasks.length ? e.tasks.map((t) =>
+        `<div><span class="pill${t.status === "running" ? " fire" : t.status === "completed" ? " speak" : ""}">${t.status}</span> ` +
+        `<b>${esc(t.tier || "")}</b> ${esc(t.goal)}<br><span class="sub">${t.task_id} · ${ago(t.created_at)} ago` +
+        (t.status === "running" ? ` · ${t.progress}% ${esc(t.progress_text)}` : "") +
+        (t.summary ? ` · ${esc(t.summary)}` : "") + (t.error ? ` · ${esc(t.error)}` : "") + `</span>` +
+        (live.includes(t.status) ? ` <button data-cancel="${t.task_id}">cancel</button>` : "") + `</div>`).join("")
+        : `<span class="sub">none yet</span>`;
+      break;
+    }
+    case "tool_calls": {
+      const el = turnEl(e.gen);
+      const c = document.createElement("div"); c.className = "calls";
+      c.textContent = e.calls.map((x) => `→ ${x.name}(${JSON.stringify(x.arguments)})`).join("  ");
+      el.querySelector(".a").after(c);
+      break;
+    }
     case "screen.status": $("scrState").textContent = e.state; $("scrState").className = "pill" + (e.state === "watching" ? " fire" : ""); break;
     case "screen.settled": {
       if (e.thumb) { $("scrThumb").src = e.thumb; $("scrThumb").hidden = false; }
@@ -267,6 +301,12 @@ ws.onmessage = (m) => {
     }
     case "turn.summary": {
       const el = turnEl(e.gen);
+      if (e.mode === "notice") {
+        el.classList.add("notice");
+        el.querySelector(".u").textContent = "📋 task news";
+        el.querySelector(".tag").textContent = (e.cancelled ? "interrupted · " : "") + `llm ${Math.round(e.llm_ttft_ms ?? 0)} ms · tts ${Math.round(e.tts_first_audio_ms ?? 0)} ms`;
+        break;
+      }
       if (e.mode === "proactive") {
         el.classList.add("proactive");
         el.querySelector(".u").textContent = "🖥 she noticed something on the screen";
@@ -293,6 +333,9 @@ ws.onmessage = (m) => {
     }
   }
 };
+$("mute").onchange = () => send({cmd: "agent_mute", on: $("mute").checked});
+$("tasks").onclick = (ev) => { const id = ev.target.dataset && ev.target.dataset.cancel; if (id) send({cmd: "task_cancel", task_id: id}); };
+ws.addEventListener("open", () => send({cmd: "tasks"}));
 ws.onclose = () => { $("state").textContent = "disconnected"; $("state").className = "state"; };
 </script>
 </body>

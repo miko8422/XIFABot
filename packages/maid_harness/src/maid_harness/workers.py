@@ -36,3 +36,17 @@ class DemoWorker(Worker):
             await asyncio.sleep(self.delay_s)
             await report(progress, text)
         return f"完了：{task.request[:80]}"
+
+
+@dataclass
+class FakeSubAgent(Worker):
+    """Stands in for the Codex runner until P3: takes about `duration_s`, reports English progress,
+    and says plainly in its summary that nothing real was done."""
+    duration_s: float = 30.0
+
+    async def run(self, task: TaskRecord, report: Progress) -> str:
+        steps = ((10, "planning"), (35, "gathering information"), (65, "working on it"), (90, "checking the result"))
+        for progress, text in steps:
+            await asyncio.sleep(self.duration_s / len(steps))
+            await report(progress, text)
+        return "Simulated sub-agent (P1 stand-in): no real work was done."

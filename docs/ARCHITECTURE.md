@@ -136,6 +136,22 @@ Risks, checked in P1:
 - Japanese ASR mangles English technical words (app names, file names) inside Japanese sentences. Speaking English for work requests avoids this.
 - English words in her replies sound wrong in the Japanese voice. The role card's voice rules should require foreign names to be written in katakana.
 
+### 4.6 What she knows she can do (capability list)
+
+An agent is a model plus tools, a loop, an environment, and an accurate picture of what it can do. Without that last part she acts like a chatbot. In the first live P1 test (2026-10-31) she denied abilities she had, because her role card said weather and task state could never be checked.
+
+So her abilities are **data, not prose**:
+- Whatever wires a reporter or runner into the harness registers a `Capability` (`maid_harness/capabilities.py`): name, status (`live` / `simulated` / `off`), a one-line English description, the tools it gives her, and a note on its limits.
+- Every reply call gets a generated 「できること」 block and exactly the tools of the usable capabilities (`maid_agent/tools.py`). Anything not listed, she says she can't do. Anything `simulated`, she may use but says honestly that the result isn't real.
+- The role card says nothing about specific abilities (v2 removed the 「天気…確かめる手段がない」 line). The card is who she is. The capability list is what she is connected to.
+- The Maid does not get a harness of her own. She is a client of the one harness, and it tells her what it offers.
+
+Two loop speeds:
+- **In-turn lookups** answer in seconds. She speaks a short line, the harness looks, and the result goes back through the speech arbiter as a follow-up line. First one: `look_at_screen` (local vision, ~5 s warm), and the latest screen observation also sits in the state block.
+- **Background tasks** are sub-agents (`delegate`), with results reported later.
+
+Chitchat stays a single call.
+
 ## 5. Harness env
 
 ### 5.1 Event inbox
@@ -240,14 +256,16 @@ Updated when a phase lands. ✅ done · 🧪 prototype, to be rebuilt · ⏳ pla
 | Persona: role card, expression retrieval | before P0 | ✅ |
 | Harness core: task records, SQLite registry, event inbox (dedupe, TTL), demo worker, cancel, computer-use confirmation, MCP stdio server | before P0 | ✅ works on its own, not connected to voice |
 | Merged multi-task notifications | before P0 | ✅ fixed Japanese templates |
+| Capability list → 「できること」 block and tool list, role card v2 | P1 | 🧪 |
+| `look_at_screen` (in-turn screen lookup) and the latest screen fact in the state block | P1 | 🧪 |
 | Screen observer, calibration logger, proactive screen remarks | before P0 | 🧪 rebuilt as a reporter in P4 |
 | Keyword router | before P0 | 🧪 becomes the fallback in P1 |
 | Package split (`maid_harness`), docs, `uv sync`, `.env` loading | P0 | ✅ |
-| `delegate` tool for intent detection, immediate acknowledgement | P1 | ⏳ |
-| Task state for 「どうなった？」 questions (T1 lookups) | P1 | ⏳ |
-| Speech arbiter v1: never over the user, merge, heartbeat | P1 | ⏳ |
-| Cancel by voice | P1 | ⏳ |
-| ASR auto-detect (Japanese/English), English task arguments, in-character notices | P1 | ⏳ |
+| `delegate` tool for intent detection, immediate acknowledgement | P1 | 🧪 built and rehearsed silently, live gate pending |
+| Task state for 「どうなった？」 questions (T1 lookups) | P1 | 🧪 |
+| Speech arbiter v1: never over the user, merge, heartbeat | P1 | 🧪 |
+| Cancel by voice | P1 | 🧪 |
+| ASR auto-detect (Japanese/English), English task arguments, in-character notices | P1 | 🧪 English from the real mic not measured yet |
 | Conversation log, restored after restart | P2 | ⏳ |
 | Codex sub-agent runner, `quick`/`work` profiles, sandboxed task workspace | P3 | ⏳ |
 | Sub-agent tools: `report_progress`, `ask_user`, `request_permission`, `submit_result` | P3 | ⏳ |
@@ -271,6 +289,17 @@ Docs consolidated (this file). Split `maid_harness` out of `maid_agent`. Existin
 ### P1 — Maid ↔ harness in the live voice loop (fake sub-agent)
 `delegate` tool in the reply call, immediate acknowledgement, task submission, T1 state block, speech arbiter v1, cancel by voice, Japanese patterns in the fallback router, ASR switched to auto-detect, English `delegate` arguments, completion notices spoken in character.
 **Gate:** say a heavy request in Japanese and another in English → acknowledgement within the direct-path latency (±100 ms) → ask 「どうなった？」 and hear the real state → completion spoken at the next pause, never over you → 「やっぱりやめて」 cancels it. Chitchat latency unchanged.
+
+**Status (2026-10-31): built, live gate not run yet.**
+- `maid_agent/tools.py`: the `delegate`, `cancel_task` and `confirm_task` tools, their prompt rules, the T1 state block.
+- `maid_agent/turns.py`: the controller hooks. Tool calls run only after the turn is committed, so a dropped hands-free speculation never starts a task. Keyword backstops: a spoken cancel with exactly one active task, and a yes/no to a confirmation asked in the last 2 minutes. `routing = "keyword"` puts `router.py` back in charge.
+- `maid_agent/arbiter.py`: speech arbiter v1. Decisions go to `runs/agent/<date>/arbiter.jsonl`, tool calls to `tool_calls.jsonl`.
+- `maid_voice`: `stream_response(context=, tools=)` with streamed tool calls, `TurnController.hooks`, `TurnController.notify()` for event turns.
+- Harness: `FakeSubAgent` (run time per tier set in `[agent]`), `interrupted` status, `Harness.recover()` on startup.
+- Probe (`maid_agent/scripts/probe_delegate.py`, 2 × 8 prompts, real role card): chitchat TTFT p50 513 ms with tools and 713 ms without, so no measurable cost. 15/16 routed right. Once she said 「止める」 without `cancel_task` (now covered by the backstop and a stricter rule), and once she called `delegate` without a word (now a fixed acknowledgement). `max_tokens` raised to 220 so the English `goal` fits.
+- Silent rehearsal with real DeepSeek and TTS: delegation in Japanese and English, a real-state answer to 「どうなった？」, completion spoken unprompted, and 「やめて」 cancelling the right one of two tasks all worked.
+- Left for the live gate: first-sound latency on the real mic, hands-free, English speech through auto-detect ASR.
+- First live test (2026-10-31) ran a server started before P1 existed, so it was P0. It also exposed the real gap: she did not know her own abilities. Fixed by the capability list (§4.6), `look_at_screen`, and role card v2. Probe after the fix: 24/24 routed right, including the two weather requests and the screen question from that session, and 「何ができる？」 answered from the list. Chitchat TTFT p50 588 ms with tools vs 620 ms without.
 
 ### P2 — Conversation persistence
 Conversation log in SQLite, restored on restart with the elapsed-time note.

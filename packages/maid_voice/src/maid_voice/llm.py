@@ -25,7 +25,14 @@ SYSTEM_PROMPT_JA = (
 class LLMDelta:
     text: str = ""
     usage: dict | None = None
+    tool_call: "ToolCall | None" = None
     done: bool = False
+
+
+@dataclass
+class ToolCall:
+    name: str
+    arguments: dict
 
 
 @dataclass
@@ -37,7 +44,7 @@ class ChatTurn:
 class LLMAdapter(Protocol):
     model: str
 
-    def stream_response(self, history: list[ChatTurn], user_text: str) -> AsyncIterator[LLMDelta]: ...
+    def stream_response(self, history: list[ChatTurn], user_text: str, **kw) -> AsyncIterator[LLMDelta]: ...
 
 
 @dataclass
@@ -64,8 +71,15 @@ class OpenAICompatLLM:
         async for _ in self.stream_response([], "hi"):
             pass
 
-    async def stream_response(self, history: list[ChatTurn], user_text: str) -> AsyncIterator[LLMDelta]:
-        system = await asyncio.to_thread(self.persona.system_prompt, user_text) if self.persona else self.system_prompt
+    async def stream_response(self, history: list[ChatTurn], user_text: str, *, context: str = "",
+                              tools: list[dict] | None = None, persona_text: str | None = None
+                              ) -> AsyncIterator[LLMDelta]:
+        """`context` is appended to the system prompt (after the persona, so the cached prefix is kept).
+        Tool calls are yielded once complete, after the text. `persona_text` picks expressions instead of user_text."""
+        query = user_text if persona_text is None else persona_text
+        system = await asyncio.to_thread(self.persona.system_prompt, query) if self.persona else self.system_prompt
+        if context:
+            system += "\n\n" + context
         messages = [{"role": "system", "content": system}]
         messages += [{"role": t.role, "content": t.content} for t in history]
         messages.append({"role": "user", "content": user_text})
@@ -74,6 +88,9 @@ class OpenAICompatLLM:
             "max_tokens": self.max_tokens, "stream_options": {"include_usage": True},
             **self.extra_body,
         }
+        if tools:
+            body["tools"] = tools
+        calls: dict[int, dict] = {}
         async with self._client.stream("POST", "/chat/completions", json=body) as r:
             if r.status_code != 200:
                 raise RuntimeError(f"LLM HTTP {r.status_code}: {(await r.aread())[:300]!r}")
@@ -87,9 +104,20 @@ class OpenAICompatLLM:
                 if chunk.get("usage"):
                     yield LLMDelta(usage=chunk["usage"])
                 for choice in chunk.get("choices", []):
-                    piece = (choice.get("delta") or {}).get("content")
-                    if piece:
-                        yield LLMDelta(text=piece)
+                    delta = choice.get("delta") or {}
+                    if delta.get("content"):
+                        yield LLMDelta(text=delta["content"])
+                    for tc in delta.get("tool_calls") or []:  # arguments arrive in fragments
+                        c = calls.setdefault(tc.get("index", 0), {"name": "", "arguments": ""})
+                        fn = tc.get("function") or {}
+                        c["name"] += fn.get("name") or ""
+                        c["arguments"] += fn.get("arguments") or ""
+        for c in calls.values():
+            try:
+                args = json.loads(c["arguments"] or "{}")
+            except json.JSONDecodeError:
+                continue  # a truncated call is dropped, never half-executed
+            yield LLMDelta(tool_call=ToolCall(c["name"], args))
         yield LLMDelta(done=True)
 
     def estimate_cost(self, usage: dict | None) -> float | None:

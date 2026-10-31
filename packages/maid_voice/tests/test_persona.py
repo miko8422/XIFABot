@@ -2,7 +2,7 @@ from pathlib import Path
 
 from maid_voice.persona import Expression, RoleCard
 
-CARD = Path(__file__).resolve().parents[2] / "maid_agent" / "persona" / "natsume.v1.toml"
+CARD = Path(__file__).resolve().parents[2] / "maid_agent" / "persona" / "natsume.v2.toml"
 
 
 def test_role_card_builds_replyer_prompt_without_planner_rules():
