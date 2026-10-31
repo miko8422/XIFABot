@@ -18,19 +18,6 @@ TaskStatus = Literal[
 
 
 @dataclass(frozen=True)
-class RouteDecision:
-    route: Route
-    confidence: float
-    reason: str
-    required_capabilities: tuple[str, ...] = ()
-
-    def to_dict(self) -> dict[str, Any]:
-        out = asdict(self)
-        out["required_capabilities"] = list(self.required_capabilities)
-        return out
-
-
-@dataclass(frozen=True)
 class TaskEvent:
     event_id: str
     type: str

@@ -24,8 +24,8 @@ def main() -> None:
     l.add_argument("--samples", type=int, default=1000)
     args = ap.parse_args()
     if args.cmd == "screen-log":
-        from .screen.logger import run
-        from .screen.observer import ObserverConfig
+        from maid_harness.reporters.screen.logger import run
+        from maid_harness.reporters.screen.observer import ObserverConfig
         try:
             run(args.out, ObserverConfig(interval_s=args.interval))
         except KeyboardInterrupt:
@@ -46,19 +46,19 @@ def main() -> None:
     elif args.cmd == "harness-mcp":
         import asyncio
 
-        from .harness.core import Harness
-        from .harness.mcp_server import run_stdio
+        from maid_harness import Harness
+        from maid_harness.mcp_server import run_stdio
 
         asyncio.run(run_stdio(Harness(args.db)))
     elif args.cmd == "demo":
         import asyncio
 
-        from .harness.demo import run_demo
+        from .demo import run_demo
 
         asyncio.run(run_demo())
     elif args.cmd == "latency":
         import json
 
-        from .harness.router import benchmark
+        from .router import benchmark
 
         print(json.dumps(benchmark(args.samples), ensure_ascii=False))

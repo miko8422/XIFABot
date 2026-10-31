@@ -1,7 +1,7 @@
 import numpy as np
 from PIL import Image, ImageDraw
 
-from maid_agent.screen.observer import ObserverConfig, Scorer
+from maid_harness.reporters.screen.observer import ObserverConfig, Scorer
 
 
 def screen(color, popup=False):

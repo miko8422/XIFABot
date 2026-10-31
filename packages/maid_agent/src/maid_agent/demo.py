@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 
-from .core import Harness
-from .maid import MaidRuntime
+from maid_harness import Harness
+
+from .runtime import MaidRuntime
 
 
 async def run_demo() -> None:

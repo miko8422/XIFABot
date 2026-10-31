@@ -92,7 +92,7 @@ The direct path must stay at today's latency (about 0.94 s p50 to first sound). 
 
 T1 lookups are fed to the reply call as a small state block (active tasks, latest reporter facts), so asking about a task costs no extra call.
 
-The keyword router in `harness/router.py` stays as a fallback and a test oracle, with Japanese patterns added. If tool calling turns out to add measurable latency or to be unreliable, we fall back to it (gate in P1).
+The keyword router in `maid_agent/router.py` stays as a fallback and a test oracle, with Japanese patterns added. If tool calling turns out to add measurable latency or to be unreliable, we fall back to it (gate in P1).
 
 ### 4.3 Speech arbiter (when she speaks)
 
@@ -100,7 +100,7 @@ One place decides whether anything from the inbox is spoken. v1 rules, deliberat
 
 1. Never while the user is speaking. Queue until the next pause.
 2. Never cut off her own reply for non-urgent news. Speak after it ends.
-3. Merge everything pending into one short line (multi-task updates already merge in `harness/maid.py`).
+3. Merge everything pending into one short line (multi-task updates already merge in `maid_agent/runtime.py`).
 4. Speak at the next pause: `task.completed`, `task.failed`, `task.needs_input`, confirmation requests.
 5. Progress is spoken when asked (T1). Unprompted progress only as a heartbeat for long tasks, at most once per N minutes per task.
 6. Reporter-driven proactive remarks: per-source rules plus a global cooldown (the existing 10 min default). The richer MaiBot-style gate from `RESPONSE_DESIGN.md` §5 is a later upgrade, driven by logged decisions.
@@ -176,7 +176,7 @@ Preference order, as before: native API/event → narrow polling adapter → rep
 | Reporter | Source | Notes |
 | --- | --- | --- |
 | Desktop activity | **ActivityWatch** (open source): active app and window, AFK state, with a local REST API | First reporter. Cheap, deterministic. Also tells the screen reporter which app is in front |
-| Screen | The existing `screen/observer.py` scorer + vision model, rebuilt as a reporter (§5.6) | Moves out of `proactive.py`, emits `screen.changed` with a description |
+| Screen | The existing `maid_harness/reporters/screen/observer.py` scorer + vision model, rebuilt as a reporter (§5.6) | Moves out of `proactive.py`, emits `screen.changed` with a description |
 | Task-side | Sub-agent lifecycle | Built into the supervisor |
 | Later | Email (IMAP IDLE), internet feeds, Steam, notifications | After the event flow is proven |
 
@@ -228,7 +228,7 @@ packages/
                   # sub-agent MCP server, reporters (desktop, screen, ...)
 ```
 
-Today the harness lives in `maid_agent/harness/` and the screen code in `maid_agent/screen/`. Splitting them into `maid_harness` now is cheap (about 1 000 lines) and keeps the "Maid never imports a sub-agent runner" rule visible. The Maid depends on the harness API only.
+Done in P0. `maid_harness` holds `core`, `inbox`, `registry`, `models`, `workers`, `mcp_server` and `reporters/screen/`. `maid_agent` holds `router.py` (with `RouteDecision`), `runtime.py` (the Maid-facing `MaidRuntime`), `demo.py`, `proactive.py` and the CLI. The Maid depends on the harness API only, and the harness never imports `maid_agent`.
 
 ## 8. Current state
 
@@ -245,9 +245,10 @@ Today the harness lives in `maid_agent/harness/` and the screen code in `maid_ag
 
 Each phase ends with something you can try by voice.
 
-### P0 — Clean foundation (small)
+### P0 — Clean foundation (small) — done 2026-10-31
 Docs consolidated (this file). Split `maid_harness` out of `maid_agent`. Existing tests stay green.
 **Gate:** `uv run pytest` passes, `maid-agent demo` and `maid-agent serve` still work.
+**Result:** 28 tests pass. `demo`, `latency` and `harness-mcp` run. `serve` and `screen-log` import cleanly but were not started live, because they need the mic and oMLX.
 
 ### P1 — Maid ↔ harness in the live voice loop (fake sub-agent)
 `delegate` tool in the reply call, immediate acknowledgement, task submission, T1 state block, speech arbiter v1, cancel by voice, Japanese patterns in the fallback router, ASR switched to auto-detect, English `delegate` arguments, completion notices spoken in character.

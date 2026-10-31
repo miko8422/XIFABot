@@ -4,8 +4,24 @@ from __future__ import annotations
 
 import re
 import time
+from dataclasses import asdict, dataclass
+from typing import Any
 
-from .models import RouteDecision
+from maid_harness.models import Route
+
+
+@dataclass(frozen=True)
+class RouteDecision:
+    route: Route
+    confidence: float
+    reason: str
+    required_capabilities: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        out = asdict(self)
+        out["required_capabilities"] = list(self.required_capabilities)
+        return out
+
 
 _COMPUTER = (
     "打开", "打开应用", "启动应用", "点击", "鼠标", "键盘", "电脑操作", "屏幕操作",

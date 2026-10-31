@@ -1,18 +1,13 @@
 [project]
 name = "maid-agent"
 version = "0.1.0"
-description = "Add your description here"
+description = "The Maid: persona, routing, notifications, on top of maid_voice and maid_harness"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "httpx>=0.28.1",
+    "maid-harness",
     "maid-voice",
-    "mss>=10.2.0",
-    "numpy>=2.5.4",
-    "pillow>=13.0.0",
-    "pyobjc-framework-cocoa>=12.2.2 ; sys_platform == 'darwin'",
-    "pyobjc-framework-quartz>=12.2.2 ; sys_platform == 'darwin'",
-    "torch>=2.14.1",
-    "transformers>=5.20.2",
 ]
 
 [project.scripts]
@@ -28,4 +23,5 @@ dev = [
 ]
 
 [tool.uv.sources]
+maid-harness = { workspace = true }
 maid-voice = { workspace = true }

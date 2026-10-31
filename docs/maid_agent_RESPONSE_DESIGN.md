@@ -69,7 +69,7 @@ At reply time, embed the current context and inject the top 3–5 as 話し方�
 
 Decisions: **main display only** (the one with the menu bar), **always on**, and the screen is sent to her only when it **changed dramatically**, scored with an image embedding. App event hooks (Codex finishing a session, later mail and other system events via MCP or a runtime) are the precise trigger. The screen is the catch-all for apps without hooks.
 
-Code: `maid_agent/src/maid_agent/screen/` (`observer.py` scorer + loop, `platform_mac.py`, `embed.py`, `logger.py`).
+Code: `maid_harness/src/maid_harness/reporters/screen/` (`observer.py` scorer + loop, `platform_mac.py`, `embed.py`, `logger.py`).
 
 | Stage | What | Cost (M5 Pro, measured) |
 | --- | --- | --- |

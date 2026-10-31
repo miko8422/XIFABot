@@ -1,11 +1,12 @@
 # XIFABot Demo
 
-This is the clean project layout for the current XIFABot Maid Agent work. It keeps the working voice runtime and screen-aware agent as two small packages so they can later become parts of a larger Maid Agent system.
+The Maid Agent: a low-latency Japanese voice companion on top, and a harness env below it where sub-agents do heavy work and reporters watch the system. See `docs/ARCHITECTURE.md`.
 
 ## What is here
 
 - `packages/maid_voice`: microphone capture, Japanese ASR, DeepSeek chat, persona retrieval, Japanese TTS, interruption and playback.
-- `packages/maid_agent`: the Maid Agent wrapper, screen observer, vision analysis, proactive attention gate, and the same voice runtime with screen events attached.
+- `packages/maid_agent`: the Maid. Persona, request routing, task notifications, the prototype proactive screen remarks, and the CLI (`maid-agent`). Depends on `maid_voice` and `maid_harness`.
+- `packages/maid_harness`: the harness env. Event inbox, task registry, supervisor and demo worker, MCP stdio server, and the screen reporter. Never imports `maid_agent`.
 - `experiments/asr-ja`: the Japanese ASR comparison experiment and its recorded results.
 - `docs/`: `ARCHITECTURE.md` (the current architecture and plan), plus the voice runtime design, persona/screen design notes, extracted feature map, and migration notes.
 
@@ -13,10 +14,11 @@ The current ASR setting is Japanese-only input (`language = "ja"`). The agent's 
 
 ## Run locally
 
-From this directory, create the new environment with `uv sync`. Then configure the local `.env` and the oMLX endpoints described in `docs/EXTRACTED_FEATURES.md`.
+From this directory, create the environment with `uv sync --all-packages`. A plain `uv sync` installs only the empty root project and removes the packages. Then configure the local `.env` and the oMLX endpoints described in `docs/EXTRACTED_FEATURES.md`.
 
 ```bash
-uv sync
+uv sync --all-packages
+uv run pytest        # all three packages
 cd packages/maid_voice
 uv run maid-voice serve
 ```

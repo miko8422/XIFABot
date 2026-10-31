@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 [manifest]
 members = [
     "maid-agent",
+    "maid-harness",
     "maid-voice",
     "xifabot-demo",
 ]
@@ -937,7 +938,32 @@ name = "maid-agent"
 version = "0.1.0"
 source = { editable = "packages/maid_agent" }
 dependencies = [
+    { name = "httpx" },
+    { name = "maid-harness" },
     { name = "maid-voice" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "maid-harness", editable = "packages/maid_harness" },
+    { name = "maid-voice", editable = "packages/maid_voice" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.1.1" }]
+
+[[package]]
+name = "maid-harness"
+version = "0.1.0"
+source = { editable = "packages/maid_harness" }
+dependencies = [
+    { name = "httpx" },
     { name = "mss" },
     { name = "numpy" },
     { name = "pillow" },
@@ -950,11 +976,12 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
+    { name = "pytest-asyncio" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "maid-voice", editable = "packages/maid_voice" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "mss", specifier = ">=10.2.0" },
     { name = "numpy", specifier = ">=2.5.4" },
     { name = "pillow", specifier = ">=13.0.0" },
@@ -965,7 +992,10 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=9.1.1" }]
+dev = [
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "pytest-asyncio", specifier = ">=1.4.0" },
+]
 
 [[package]]
 name = "maid-voice"

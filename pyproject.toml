@@ -8,4 +8,4 @@ requires-python = ">=3.12"
 package = false
 
 [tool.uv.workspace]
-members = ["packages/maid_voice", "packages/maid_agent"]
+members = ["packages/maid_voice", "packages/maid_harness", "packages/maid_agent"]

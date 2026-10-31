@@ -27,9 +27,9 @@ from pathlib import Path
 
 import httpx
 
-from .screen.logger import CalibrationLog
-from .screen.observer import ObserverConfig, ScreenObserver, Settled
-from .screen.vision import ScreenVision
+from maid_harness.reporters.screen.logger import CalibrationLog
+from maid_harness.reporters.screen.observer import ObserverConfig, ScreenObserver, Settled
+from maid_harness.reporters.screen.vision import ScreenVision
 
 DECIDE = """# 自分から話しかけるときの方針
 {behavior}
