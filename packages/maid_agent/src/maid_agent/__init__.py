@@ -16,7 +16,8 @@ def main() -> None:
     v = sub.add_parser("serve", help="voice conversation + harness tasks + screen pipeline, with the agent web UI")
     v.add_argument("--host", default="127.0.0.1")
     v.add_argument("--port", type=int, default=8766)
-    v.add_argument("--cooldown", type=float, default=600.0, help="seconds between her unprompted remarks")
+    v.add_argument("--cooldown", type=float, default=None,
+                   help="seconds between her unprompted remarks (default: per activity, [agent.speech])")
     v.add_argument("--routing", choices=["tool", "keyword"], help="overrides [agent].routing")
     v.add_argument("--no-screen", action="store_true", help="run without the screen observer (no capture permission needed)")
     h = sub.add_parser("harness-mcp", help="run the v0.1 harness as an MCP stdio server")
@@ -43,11 +44,10 @@ def main() -> None:
         agent_cfg = AgentConfig.from_raw(cfg.raw.get("agent", {}))
         if args.routing:
             agent_cfg.routing = args.routing
-        screen = None
-        if not args.no_screen:
-            from .proactive import ProactiveConfig, ScreenProactive
-            screen = ScreenProactive(PROJECT_ROOT / "runs", ProactiveConfig(cooldown_s=args.cooldown))
-        ext = MaidAgent(PROJECT_ROOT, agent_cfg, screen)
+        from .proactive import ProactiveConfig
+        raw = cfg.raw.get("agent", {})
+        ext = MaidAgent(PROJECT_ROOT, agent_cfg, screen=not args.no_screen, activity=raw.get("activity"),
+                        speech=raw.get("speech"), proactive=ProactiveConfig(cooldown_s=args.cooldown))
         try:
             asyncio.run(serve(cfg, args.host, args.port, index=STATIC / "index.html",
                               run_name="agent", extension=ext))

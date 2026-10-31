@@ -1,6 +1,6 @@
 # Codebase guide
 
-How the code is laid out, what each module does, and the idea behind it. Design decisions and the phase plan are in `ARCHITECTURE.md`. This file is the map. State: P3.5 (2026-10-31).
+How the code is laid out, what each module does, and the idea behind it. Design decisions and the phase plan are in `ARCHITECTURE.md`. This file is the map. State: P4 (2026-10-31).
 
 ## 1. The three packages and the one rule
 
@@ -23,7 +23,7 @@ How the code is laid out, what each module does, and the idea behind it. Design 
 - **`TurnHooks`** in `maid_voice/controller.py`: `plan` / `ack` / `run` / `remember`. The voice loop asks the Maid for extra context and tools, and hands back tool calls and new history.
 - **The harness API plus inbox events**: the Maid calls `submit`, `answer`, `grant`, `follow_up` and `cancel`, and listens to events.
 
-This is why each layer can be tested alone (`uv run pytest` runs 78 tests without a mic, models or network) and replaced alone. For example, the Codex runner can be swapped without touching voice code.
+This is why each layer can be tested alone (`uv run pytest` runs 90 tests without a mic, models or network) and replaced alone. For example, the Codex runner can be swapped without touching voice code.
 
 ## 2. `maid_voice`: the voice loop (about 1,300 lines)
 
@@ -59,7 +59,8 @@ The oldest and most tuned part. It turns speech into her spoken reply at about 0
 | `codex_home.py` | The sub-agents' clean `CODEX_HOME`, rebuilt from `~/.codex` per run: provider and login only, `auth.json` linked, unneeded features off; a safe fingerprint (provider, endpoint host, model, account hash) | Isolation from your real Codex, and cc-switch changes still apply |
 | `workers.py` | Worker protocol, `DemoWorker`, `FakeSubAgent` (computer-use until P6) | — |
 | `mcp_server.py` | The older task-level MCP stdio server (`maid-agent harness-mcp`) | Not used by sub-agents |
-| `reporters/screen/` | Screen observer (settle, then score the change with SigLIP2 + tiles + app baseline), calibration log, local vision (Qwen3.6 on oMLX) | Pixels never leave the Mac. It becomes a proper reporter in P4 |
+| `reporters/activity.py` | What the user is doing: working / gaming / call / away, from ActivityWatch or the macOS adapter, debounced. Emits `activity.changed` and `user.back`, and facts for the state block | Cheap and deterministic; any app can be marked a game |
+| `reporters/screen/` | `observer.py` (settle, then score the change with SigLIP2 + tiles + app baseline), `reporter.py` (observer + local vision → `screen.changed` facts; waits while anyone speaks; `look()` on request), calibration log, `vision.py` (Qwen3.6 on oMLX) | Pixels never leave the Mac. Reporters report; the Maid decides |
 
 ## 4. `maid_agent`: the Maid (about 1,600 lines)
 
@@ -68,9 +69,9 @@ The oldest and most tuned part. It turns speech into her spoken reply at about 0
 | `agent.py` | `MaidAgent`, the `serve` extension. Wires harness, runner, sub-agent tools, capabilities, turns, arbiter, conversation and screen together; feeds the UI | The only place that knows about everything |
 | `turns.py` | `MaidTurns` = the `TurnHooks`. `plan` builds 「できること」 + rules + state block (+ time-gap note) and the tool list; `run` executes tool calls and reports any that changed nothing; `remember` logs the turn and runs the correction pass when she claimed an action without a tool call; keyword backstops for cancel and yes/no; daily token budget | Routing inside the existing reply call (§4.2): no planner, no extra latency |
 | `tools.py` | Tool schemas (`delegate`, `look_at_screen`, `answer_task`, `follow_up_task`, `cancel_task`, `confirm_task`, `read_task`, `search_tasks`, `search_conversation`), the Japanese rules, `capability_block`, `state_block` (3-day window, newest details), `usage_since` | — |
-| `arbiter.py` | Speech arbiter v1: task news waits for a pause plus a quiet gap, is merged, heartbeats long tasks, mute, requeue once; logs every decision | One place decides when she speaks unprompted |
+| `arbiter.py` | Speech arbiter: task news waits for a pause plus a quiet gap, is merged, heartbeats long tasks, mute, requeue once. `SpeechRules` per activity: hold in a call or away, short while gaming, greet when back. Logs every decision | One place decides when she speaks unprompted |
 | `conversation.py` | Conversation log in `runs/maid/memory.sqlite3`, restore on startup, time-gap note | The Maid owns memory; the harness owns the task dataset |
-| `proactive.py` | Screen → her: gate → vision → one DeepSeek decision → `say()`. Also `look()` / `facts()` for the reply call | Rebuilt as a reporter in P4 |
+| `proactive.py` | `ProactiveSpeaker`: `screen.changed` → per-activity gate and cooldown → one DeepSeek decision → `say()` | The screen watching itself is the harness's screen reporter |
 | `router.py` | The keyword router: fallback (`routing = "keyword"`), test oracle, and backstop phrases | — |
 | `runtime.py`, `demo.py` | The text-only v0.1 Maid layer and `maid-agent demo` | Kept for the demo and tests |
 | `persona/` | Role card `natsume.v2.toml` (v1 kept) and the expression bank | Versioned; never rewritten by conversation |
@@ -97,4 +98,4 @@ The oldest and most tuned part. It turns speech into her spoken reply at about 0
 
 ## 7. Tests
 
-`uv run pytest` (78 tests, about 16 s): voice controller with fake models, harness and runner (with `maid_harness/tests/fake_codex.py` standing in for Codex, run through the real supervisor and stdio MCP processes: same argv, events and MCP calls, including a Maid dying mid-run), and the Maid per phase (`test_p1.py`, `test_p2.py`, `test_p3.py`, which also covers P3.5). Real-model checks are scripts (`probe_delegate.py`) and the rehearsals recorded in `ARCHITECTURE.md` §9.
+`uv run pytest` (90 tests, about 18 s): voice controller with fake models, harness and runner (with `maid_harness/tests/fake_codex.py` standing in for Codex, run through the real supervisor and stdio MCP processes: same argv, events and MCP calls, including a Maid dying mid-run), and the Maid per phase (`test_p1.py` … `test_p4.py`; `test_p3.py` also covers P3.5). Real-model checks are scripts (`probe_delegate.py`) and the rehearsals recorded in `ARCHITECTURE.md` §9.

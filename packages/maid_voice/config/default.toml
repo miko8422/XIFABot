@@ -48,6 +48,23 @@ quiet_gap_s = 1.5          # task news waits this long after anyone spoke
 heartbeat_s = 180          # unprompted progress for a long task at most this often
 memory_db = "runs/maid/memory.sqlite3"  # her own file: conversation log (P2), memory bank later
 restore_turns = 8          # messages put back into her history on startup (capped by [llm].history_turns)
+activity_source = "auto"   # auto: ActivityWatch (127.0.0.1:5600) if running, else macOS front app + idle | macos | off
+
+[agent.activity]
+# which apps count as what (app name, bundle id or window-title words; ActivityWatch adds titles)
+# add any app to `game` to simulate a play session on the Mac (ARCHITECTURE §5.6)
+game = ["Steam", "com.valvesoftware", "Battle.net", "Epic Games", "Minecraft", "League of Legends", "Genshin", "原神"]
+call = ["zoom.us", "Microsoft Teams", "FaceTime", "Webex", "Google Meet", "Meet -", "Slack Huddle"]
+afk_after_s = 180          # no input this long: away
+debounce_s = 5             # a new activity must hold this long (alt-tab is not a change)
+
+[agent.speech]
+# when she speaks unprompted, per activity (speech arbiter rule 6). task_news: speak | hold
+greet_after_s = 600        # back after this long away: she greets and tells what came in meanwhile
+working = { task_news = "speak", proactive = true, cooldown_s = 600 }
+gaming = { task_news = "speak", proactive = true, cooldown_s = 300, style = "あきらはゲーム中。邪魔にならないよう、一文だけ短く。" }
+call = { task_news = "hold", proactive = false }
+away = { task_news = "hold", proactive = false }
 
 [persona]
 # role card + expressions mined from her lines (scripts/build_expressions.py); off = the built-in prompt in llm.py

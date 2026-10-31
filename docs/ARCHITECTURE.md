@@ -271,8 +271,8 @@ Updated when a phase lands. ✅ done · 🧪 prototype, to be rebuilt · ⏳ pla
 | Sub-agent tools: `report_progress`, `ask_user`, `request_permission`, `submit_result` | P3 | 🧪 |
 | Answering sub-agent questions and permission requests by voice, follow-up resume, timeout, `interrupted` on restart | P3 | 🧪 |
 | Clean isolated Codex home, durable detached sub-agents, read sandbox, correction pass, read/search tools, 3-day window, budgets | P3.5 | 🧪 real runs done, live voice gate pending |
-| ActivityWatch reporter, `activity_profiles` (game/call/work) | P4 | ⏳ |
-| Screen reporter (rebuilt from the observer), per-activity speech rules | P4 | ⏳ |
+| Activity reporter (ActivityWatch, else macOS front app and idle time), `activity_profiles` (game/call/work/away) | P4 | 🧪 macOS source verified live; ActivityWatch not installed yet |
+| Screen reporter (rebuilt from the observer, vision paused while anyone speaks), per-activity speech rules, おかえり | P4 | 🧪 live day/gaming gate pending |
 | Memory bank: from task summaries and 「覚えておいて」, list/correct/delete | P5 | ⏳ |
 | Computer-use sub-agent: confirmation, action budget, verified result | P6 | ⏳ |
 | Email, internet, Steam reporters; pop-up cards | P7 | ⏳ |
@@ -352,7 +352,14 @@ Known limits:
 ### P4 — Reporters and proactive speech
 ActivityWatch reporter, the screen observer rebuilt as a reporter (§5.6), speech arbiter per-activity rules (working, gaming, call, AFK).
 **Gate:** a normal working day and a gaming session, with a count of unprompted remarks and your rating of them. No spam, nothing spoken over you.
-Known issue to fix here: vision and TTS share oMLX and the GPU, and her voice stutters when they overlap. `look_at_screen` already waits for her acknowledgement to finish (P2), but a proactive look can still overlap with a reply if the user starts talking during it. The reporter should pause or queue vision while she speaks.
+**Status (2026-10-31): built, live gate not run yet.**
+- `maid_harness/reporters/activity.py`: the source is ActivityWatch's REST API if it runs (window titles too), else the macOS adapter. Classification is away > call > game > working, from `[agent.activity]`. A change must hold for 5 s; away counts at once. Events: `activity.changed`, `user.back`. The state block says what the user is doing and for how long.
+- `maid_harness/reporters/screen/reporter.py`: the observer plus local vision as a reporter. It emits `screen.changed` facts and never decides or speaks. Vision waits while anyone speaks, and a change that waited more than 20 s is dropped as stale. One vision call at a time.
+- `maid_agent/proactive.py` is now `ProactiveSpeaker`: it consumes `screen.changed`, checks the per-activity gate (no remarks in a call or while away; cooldown 10 min working, 5 min gaming), skips the LLM when nothing is worth mentioning, then the DeepSeek decide call and her line.
+- `maid_agent/arbiter.py` `SpeechRules` (`[agent.speech]`): in a call or away, task news is held, while answers to the user's own questions still come. Gaming adds a one-short-sentence style. Back after 10 min or more away → she greets first, then tells what came in.
+- Live checks: the macOS source classified the real Mac correctly (Warp, idle 398 s → away). `serve` boots with `activity=live`, `screen=live`. Real DeepSeek with 30 min of Steam: 「俺が今何してるかわかる？」 → 「Steamでゲーム中でしょ。三十分くらい経ってる。」, and task news while gaming came as one short sentence.
+
+Known issue (fixed in P4): vision and TTS share oMLX and the GPU, and her voice stutters when they overlap. `look_at_screen` already waits for her acknowledgement to finish (P2), but a proactive look can still overlap with a reply if the user starts talking during it. The reporter should pause or queue vision while she speaks.
 
 Planned (Alan, 2026-10-31), **future work, not yet scheduled**: a CodeIsland-like **"your sessions" reporter**. The Maid knows the Claude Code and Codex sessions *you* are running (not her sub-agents), and speaks up when one finishes or waits for your approval, as an information source and a sense of working together. She has **no power to approve anything**.
 - How to get the data: [CodeIsland](https://github.com/wxtsky/CodeIsland) (MIT) installs hooks into `~/.claude/settings.json` and `~/.codex/hooks.json`, and they forward events (session start, tool call, permission request, stop) over a Unix socket. That gives live "needs approval" status. Reading the session files the tools already write (`~/.claude/projects/**`, `~/.codex/sessions/**`) needs no config change but sees approvals late or not at all. Likely answer: our own hook entries next to CodeIsland's, forwarding to the Maid, opt-in, plus the files for history (last 3 days, searchable).

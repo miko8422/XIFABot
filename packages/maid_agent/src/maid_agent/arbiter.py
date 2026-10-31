@@ -9,6 +9,8 @@ Rules (numbers match §4.3):
   3    everything pending goes out as one line
   4    completed / failed / needs_input / interrupted are spoken unprompted
   5    progress only when asked (the T1 state block), or as a heartbeat every `heartbeat_s` per long task
+  6    per-activity rules (P4, `SpeechRules`): in a call or away, task news is held; while gaming, one short
+       sentence; back after `greet_after_s` away -> she greets and tells what came in meanwhile
   7    mute holds everything until unmuted
 A notice that gets interrupted goes back into the queue once. Every decision is logged with its rule.
 """
@@ -18,7 +20,8 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
@@ -27,6 +30,40 @@ from maid_harness.models import TaskEvent
 
 SPOKEN = {"task.completed", "task.failed", "task.needs_input", "task.needs_permission", "task.interrupted"}
 HEADER = "（あきらの発言ではない。作業の知らせや、確かめた結果）次のことを伝えて:"
+
+
+@dataclass
+class Rule:
+    task_news: str = "speak"        # speak | hold
+    proactive: bool = True          # unprompted remarks about the screen
+    cooldown_s: float = 600.0       # at least this long between unprompted remarks
+    style: str = ""                 # how to say things in this activity, for the LLM
+
+
+@dataclass
+class SpeechRules:
+    """When she may speak, per activity (§4.3 rule 6, §5.6). Configured in [agent.speech.<activity>]."""
+    rules: dict[str, Rule] = field(default_factory=lambda: {
+        "working": Rule("speak", True, 600.0),
+        "gaming": Rule("speak", True, 300.0, "あきらはゲーム中。邪魔にならないよう、一文だけ短く。"),
+        "call": Rule("hold", False),
+        "away": Rule("hold", False),
+    })
+    greet_after_s: float = 600.0    # back after this long away: she says something
+
+    def get(self, activity: str) -> Rule:
+        return self.rules.get(activity) or self.rules["working"]
+
+    @classmethod
+    def from_raw(cls, raw: dict) -> "SpeechRules":
+        out = cls()
+        for name, r in raw.items():
+            if isinstance(r, dict):
+                base = out.rules.get(name, Rule())
+                out.rules[name] = Rule(**{**base.__dict__, **{k: r[k] for k in Rule.__dataclass_fields__ if k in r}})
+        if "greet_after_s" in raw:
+            out.greet_after_s = float(raw["greet_after_s"])
+        return out
 
 
 @dataclass
@@ -39,7 +76,7 @@ class ArbiterConfig:
 
 @dataclass
 class Item:
-    kind: str          # completed | failed | needs_input | interrupted | progress | lookup
+    kind: str          # completed | failed | needs_input | interrupted | progress | lookup | back
     task_id: str
     text: str
     retried: bool = False
@@ -47,9 +84,12 @@ class Item:
 
 class SpeechArbiter:
     def __init__(self, harness: Harness, cfg: ArbiterConfig | None = None, log_dir: Path | None = None,
-                 clock=time.time) -> None:
+                 clock=time.time, rules: SpeechRules | None = None,
+                 activity: Callable[[], str] = lambda: "working") -> None:
         self.harness = harness
         self.cfg = cfg or ArbiterConfig()
+        self.rules = rules or SpeechRules()
+        self.activity = activity
         self.log_dir = log_dir
         self.clock = clock
         self.pending: list[Item] = []
@@ -59,6 +99,13 @@ class SpeechArbiter:
 
     # ---- inbox -> pending -------------------------------------------------------
     def _on_event(self, event: TaskEvent) -> None:
+        if event.type == "user.back":
+            away = float(event.payload.get("away_s", 0))
+            if away >= self.rules.greet_after_s:
+                self.pending = [i for i in self.pending if i.kind != "back"]
+                self.pending.insert(0, Item("back", "user", f"[the user is back after {int(away // 60)} min away; "
+                                                            "greet them briefly first]"))
+            return
         if event.type not in SPOKEN or not event.task_id:
             return
         task = self.harness.registry.get(event.task_id)
@@ -109,11 +156,17 @@ class SpeechArbiter:
             out.append(i)
         return out
 
-    def prompt(self, items: list[Item]) -> str:
-        return HEADER + "\n" + "\n".join(f"- {i.text}" for i in items)
+    def prompt(self, items: list[Item], style: str = "") -> str:
+        return HEADER + "\n" + "\n".join(f"- {i.text}" for i in items) + (f"\n（{style}）" if style else "")
+
+    def deliverable(self, rule: Rule) -> tuple[list[Item], list[Item]]:
+        """(say now, keep). Answers to what あきら just asked (lookups) are never held by an activity rule."""
+        if rule.task_news == "speak":
+            return self.pending, []
+        return [i for i in self.pending if i.kind == "lookup"], [i for i in self.pending if i.kind != "lookup"]
 
     async def run(self, ctx) -> None:
-        held_logged = False
+        held_logged = None
         while True:
             await asyncio.sleep(self.cfg.tick_s)
             now = self.clock()
@@ -121,18 +174,26 @@ class SpeechArbiter:
             free = self.can_speak(ctx, now)
             if not self.pending:
                 continue
+            activity = self.activity()
+            rule = self.rules.get(activity)
             if self.cfg.muted:
-                if not held_logged:
+                if held_logged != "mute":
                     self._log("7 mute", "hold", self.pending)
-                    held_logged = True
+                    held_logged = "mute"
                 continue
-            held_logged = False
+            say, keep = self.deliverable(rule)
+            if not say:
+                if held_logged != activity:
+                    self._log(f"6 {activity}", "hold", keep)
+                    held_logged = activity
+                continue
+            held_logged = None
             if not free:
                 continue
-            items, self.pending = self._fresh(self.pending), []
+            items, self.pending = self._fresh(say), keep
             if not items:
                 continue
-            task = ctx.ctl.notify(self.prompt(items), source="arbiter")
+            task = ctx.ctl.notify(self.prompt(items, rule.style), source="arbiter")
             if task is None:  # lost a race with a turn that just started
                 self.pending = items + self.pending
                 continue

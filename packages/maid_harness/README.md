@@ -18,4 +18,5 @@ uv run pytest
 - `workers.py`: worker protocol, the deterministic demo worker, and `FakeSubAgent` (computer-use tasks until P6, or `runner = "fake"`).
 - `mcp_server.py`: the older task-level MCP stdio server (`maid-agent harness-mcp`). Sub-agents use `subagent_mcp.py` instead.
 - `tests/fake_codex.py`: stands in for `codex` in tests, with the same argv, events and MCP calls.
-- `reporters/screen/`: main-display observer (settle, then score the change with SigLIP2, a tile grid, app switches, a per-app baseline and "seen recently"), calibration logger, and local vision. It is still driven by `maid_agent/proactive.py` and becomes a proper reporter in P4.
+- `reporters/activity.py`: working / gaming / call / away from ActivityWatch or the macOS adapter, debounced; `activity.changed`, `user.back`.
+- `reporters/screen/`: the observer (settle, then score the change with SigLIP2, a tile grid, app switches, a per-app baseline and "seen recently"), `reporter.py` (observer + local vision → `screen.changed` facts, waits while anyone speaks), calibration logger, and local vision.

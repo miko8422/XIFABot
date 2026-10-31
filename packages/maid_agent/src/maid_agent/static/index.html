@@ -83,6 +83,7 @@
     </div>
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
       <span id="state" class="state">connecting</span>
+      <span id="activity" class="pill" title="what the activity reporter thinks you are doing">–</span>
       <div class="meter" style="flex:1"><div id="lvl"></div></div>
     </div>
     <div id="partial"></div>
@@ -244,9 +245,15 @@ ws.onmessage = (m) => {
         $("caps").innerHTML = (e.agent.capabilities || []).map((c) =>
           `<span class="pill${c.status === "live" ? " speak" : ""}" title="${esc(c.note)}">${esc(c.name)}: ${c.status}</span>`).join("");
       }
-      if (e.screen) {
-        $("scrWatch").checked = e.screen.watch; $("scrSpeak").checked = e.screen.speak;
-        $("cd").value = Math.round(e.screen.cooldown_s / 60); $("cdv").textContent = $("cd").value;
+      const scr = e.screen || (e.agent && e.agent.screen);
+      if (scr) {
+        $("scrWatch").checked = scr.watch; $("scrSpeak").checked = scr.speak;
+        $("cd").value = Math.round(scr.cooldown_s / 60); $("cdv").textContent = $("cd").value;
+      }
+      if (e.agent && e.agent.activity) {
+        const a = e.agent.activity, label = {working: "💻 working", gaming: "🎮 gaming", call: "📞 call", away: "💤 away"}[a.activity];
+        $("activity").textContent = label + (a.app ? " · " + a.app : "");
+        $("activity").className = "pill" + (a.activity === "working" ? "" : " fire");
       }
       $("voice").innerHTML = e.voices.map((v) => `<option ${v === e.voice ? "selected" : ""}>${v}</option>`).join("");
       $("info").innerHTML = ["asr", "llm", "tts", "input", "output", "warmup_ms", "run_dir"]
