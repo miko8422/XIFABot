@@ -97,6 +97,18 @@ class SpeechArbiter:
             self._last_busy = now
         return not busy and now - self._last_busy >= self.cfg.quiet_gap_s
 
+    def _fresh(self, items: list[Item]) -> list[Item]:
+        """Drop a question or permission request whose task has moved on (answered meanwhile, or late)."""
+        out = []
+        for i in items:
+            if i.kind in ("needs_input", "needs_permission"):
+                task = self.harness.registry.get(i.task_id)
+                if task is None or task.status != i.kind:
+                    self._log("4 stale", "drop", [i])
+                    continue
+            out.append(i)
+        return out
+
     def prompt(self, items: list[Item]) -> str:
         return HEADER + "\n" + "\n".join(f"- {i.text}" for i in items)
 
@@ -117,7 +129,9 @@ class SpeechArbiter:
             held_logged = False
             if not free:
                 continue
-            items, self.pending = self.pending, []
+            items, self.pending = self._fresh(self.pending), []
+            if not items:
+                continue
             task = ctx.ctl.notify(self.prompt(items), source="arbiter")
             if task is None:  # lost a race with a turn that just started
                 self.pending = items + self.pending

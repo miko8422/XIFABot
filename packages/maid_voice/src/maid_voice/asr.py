@@ -9,6 +9,15 @@ import numpy as np
 import soundfile as sf
 
 LANG_CODES = {"japanese": "ja", "english": "en", "chinese": "zh"}
+# Output cap per second of audio. oMLX defaults to 8192 tokens, and on 2026-10-31 Qwen3-ASR twice fell into a
+# repetition loop on an ordinary clip and generated all 8192 (84 s). oMLX runs one request at a time, so her
+# TTS waited behind it ("text shown, voice jammed") and the next turn's ASR timed out. Real speech is far
+# below 15 tokens/s, so the cap never cuts a real transcript.
+TOKENS_PER_S, MIN_TOKENS = 15, 32
+
+
+def max_tokens_for(n_samples: int, sample_rate: int) -> int:
+    return MIN_TOKENS + int(TOKENS_PER_S * n_samples / sample_rate)
 
 
 @dataclass
@@ -39,7 +48,8 @@ class OmlxASR:
     async def transcribe(self, pcm: np.ndarray, sample_rate: int) -> FinalTranscript:
         buf = io.BytesIO()
         sf.write(buf, pcm, sample_rate, format="WAV", subtype="PCM_16")
-        data = {"model": self.model, "response_format": "verbose_json"}
+        data = {"model": self.model, "response_format": "verbose_json",
+                "max_tokens": str(max_tokens_for(len(pcm), sample_rate))}
         if self.language:
             data["language"] = self.language
         if self.prompt:

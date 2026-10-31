@@ -28,12 +28,18 @@ output_language = "ja"
 # maid-agent serve only (ARCHITECTURE §4, P1)
 routing = "tool"           # tool: delegate tool inside the reply call | keyword: maid_agent/router.py decides
 db = "runs/harness/tasks.sqlite3"
-runner = "codex"           # codex: real sub-agents for quick/work tasks (P3) | fake: the P1 stand-in
-codex = "codex"            # Codex CLI; uses your ~/.codex config (model, provider, login)
-tasks_dir = "runs/tasks"   # one workspace per task, with its full event stream
-quick_effort = "low"       # quick: read-only + live web search
+runner = "codex"           # codex: real sub-agents for quick/work tasks | fake: the P1 stand-in
+codex = "codex"            # Codex CLI
+codex_home = "runs/codex_home"  # the sub-agents' own clean CODEX_HOME: rebuilt from your ~/.codex before every
+                           # run (provider + login only, so cc-switch changes apply; no skills, MCP, hooks)
+model = "gpt-5.6-luna"     # sub-agent model, through your own Codex provider/account
+max_running = 2            # sub-agents at once; more wait in line. They survive a restart of serve
+daily_token_budget = 0     # 0 = no limit; else she refuses new sub-agents once today's tokens reach it
+retention_days = 7         # a finished task's files are deleted after this many days; its logs are kept
+tasks_dir = "runs/tasks"   # one workspace per task: its files and its full event stream
+quick_effort = "low"       # quick: live web search; reads/writes only its own folder
 quick_timeout_s = 300
-work_effort = "medium"     # work: writes only inside its task folder unless you grant more by voice
+work_effort = "low"        # work: same sandbox; anything outside its folder needs your yes by voice
 work_timeout_s = 1800
 fake_quick_s = 20          # the fake sub-agent's run time per tier (runner = "fake", and computer tasks until P6)
 fake_work_s = 45

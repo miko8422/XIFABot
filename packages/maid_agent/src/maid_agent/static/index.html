@@ -238,7 +238,9 @@ ws.onmessage = (m) => {
       $("sil").value = e.end_silence_ms; $("silv").textContent = e.end_silence_ms;
       $("barge").checked = !!e.barge_in;
       if (e.agent) {
-        $("routing").textContent = "routing: " + e.agent.routing; $("mute").checked = e.agent.muted;
+        $("routing").textContent = `routing: ${e.agent.routing} · tokens today ${(e.agent.tokens_today || 0).toLocaleString()}`
+          + (e.agent.token_budget ? ` / ${e.agent.token_budget.toLocaleString()}` : "");
+        $("mute").checked = e.agent.muted;
         $("caps").innerHTML = (e.agent.capabilities || []).map((c) =>
           `<span class="pill${c.status === "live" ? " speak" : ""}" title="${esc(c.note)}">${esc(c.name)}: ${c.status}</span>`).join("");
       }
@@ -273,7 +275,8 @@ ws.onmessage = (m) => {
         `<div><span class="pill${t.status === "running" ? " fire" : t.status === "completed" ? " speak" : ""}">${t.status}</span> ` +
         `<b>${esc(t.tier || "")}</b> ${esc(t.goal)}<br><span class="sub">${t.task_id} · ${ago(t.created_at)} ago` +
         (t.status === "running" ? ` · ${t.progress}% ${esc(t.progress_text)}` : "") +
-        (t.summary ? ` · ${esc(t.summary)}` : "") + (t.error ? ` · ${esc(t.error)}` : "") + `</span>` +
+        (t.summary ? ` · ${esc(t.summary)}` : "") + (t.error ? ` · ${esc(t.error)}` : "") +
+        (t.codex ? ` · ${esc(t.codex.model)} via ${esc(t.codex.endpoint)} #${esc(t.codex.account)} · ${t.tokens.toLocaleString()} tok` : "") + `</span>` +
         (live.includes(t.status) ? ` <button data-cancel="${t.task_id}">cancel</button>` : "") + `</div>`).join("")
         : `<span class="sub">none yet</span>`;
       break;

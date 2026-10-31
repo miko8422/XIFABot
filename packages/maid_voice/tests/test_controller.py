@@ -251,7 +251,7 @@ class FakeHooks:
     async def run(self, calls, user_text):
         self.ran.append(([c.name for c in calls], user_text))
 
-    def remember(self, turns, mode):
+    def remember(self, turns, mode, tool_calls):
         self.remembered.append(([(t.role, t.content) for t in turns], mode))
 
 
@@ -317,3 +317,12 @@ async def test_notify_goes_through_the_llm_and_keeps_only_her_line_in_history():
     assert hooks.plans[-1] == ("[completed] search: done", "notice") and llm.requests[-1]["tools"] is None
     assert [t.role for t in ctl.history] == ["assistant"] and ctl.history[0].content == "さっきの、終わったって。"
     assert hooks.remembered == [([("assistant", "さっきの、終わったって。")], "notice")]
+
+
+def test_asr_output_cap_scales_with_the_clip_and_stops_runaway_transcripts():
+    from maid_voice.asr import max_tokens_for
+
+    assert max_tokens_for(16000 * 3, 16000) == 32 + 45      # a 3 s utterance: far above any real transcript
+    assert max_tokens_for(24000 * 20, 24000) == 32 + 300    # a long 20 s turn
+    assert max_tokens_for(0, 16000) == 32
+    assert max_tokens_for(16000 * 6, 16000) < 8192 // 50    # oMLX's default 8192 ran for 84 s (2026-10-31)

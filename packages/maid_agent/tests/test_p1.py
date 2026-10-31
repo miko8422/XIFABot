@@ -275,7 +275,8 @@ def test_capability_block_and_tools_follow_the_harness_registry():
     block = capability_block(caps)
     assert "sub_agents（練習用）" in block and "weather" in block and "screen" not in block
     names = {t["function"]["name"] for t in tools_for(caps)}
-    assert names == {"delegate", "cancel_task", "confirm_task"}, "no look_at_screen without a screen"
+    assert names == {"delegate", "cancel_task", "confirm_task", "read_task", "search_tasks"}, \
+        "no look_at_screen without a screen"
 
     harness.capabilities.register(Capability("screen", "live", "can look at the screen", ("look_at_screen",)))
     assert "look_at_screen" in {t["function"]["name"] for t in tools_for(harness.capabilities.usable())}

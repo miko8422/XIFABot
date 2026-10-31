@@ -120,6 +120,25 @@ class OpenAICompatLLM:
             yield LLMDelta(tool_call=ToolCall(c["name"], args))
         yield LLMDelta(done=True)
 
+    async def complete(self, messages: list[dict], tools: list[dict] | None = None,
+                       max_tokens: int = 300) -> tuple[str, list[ToolCall]]:
+        """One non-streamed call, for off-the-voice-path work (the Maid's correction pass)."""
+        body = {"model": self.model, "messages": messages, "max_tokens": max_tokens, **self.extra_body}
+        if tools:
+            body["tools"] = tools
+        r = await self._client.post("/chat/completions", json=body)
+        if r.status_code != 200:
+            raise RuntimeError(f"LLM HTTP {r.status_code}: {r.text[:300]!r}")
+        msg = r.json()["choices"][0]["message"]
+        calls = []
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            try:
+                calls.append(ToolCall(fn.get("name", ""), json.loads(fn.get("arguments") or "{}")))
+            except json.JSONDecodeError:
+                continue
+        return msg.get("content") or "", calls
+
     def estimate_cost(self, usage: dict | None) -> float | None:
         if not usage or not (self.price_in or self.price_out):
             return None

@@ -28,9 +28,12 @@ class TaskRegistry:
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._db = sqlite3.connect(self.path, check_same_thread=False)
+        # autocommit + explicit BEGIN IMMEDIATE in update(): several processes write this file (P3.5:
+        # the Maid, each task's supervisor and its MCP tools), so every read-modify-write is one transaction
+        self._db = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None, timeout=10)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
+        self._db.execute("PRAGMA busy_timeout=10000")
         self._db.executescript(
             """
             CREATE TABLE IF NOT EXISTS tasks (
@@ -69,6 +72,7 @@ class TaskRegistry:
             );
             CREATE INDEX IF NOT EXISTS events_time_idx ON events(occurred_at);
             CREATE INDEX IF NOT EXISTS events_task_idx ON events(task_id, occurred_at);
+            CREATE TABLE IF NOT EXISTS cursors (name TEXT PRIMARY KEY, pos INTEGER NOT NULL);
             """
         )
         self._db.commit()
@@ -124,16 +128,42 @@ class TaskRegistry:
             rows = self._db.execute(f"SELECT * FROM tasks{where} ORDER BY created_at DESC", args).fetchall()
         return [self._row_task(row) for row in rows]
 
-    def update(self, task_id: str, now: float | None = None, **changes: Any) -> TaskRecord:
-        task = self.get(task_id)
-        if task is None:
-            raise KeyError(f"unknown task {task_id}")
-        for key, value in changes.items():
-            if not hasattr(task, key):
-                raise ValueError(f"unknown task field {key}")
-            setattr(task, key, value)
-        task.updated_at = _now() if now is None else now
-        self._write_task(task)
+    def search(self, query: str, limit: int = 5) -> list[TaskRecord]:
+        """Tasks whose request, goal, summary or result mention the query's words, most matches first."""
+        words = [w for w in query.replace("、", " ").replace("。", " ").split() if w][:8]
+        if not words:
+            return []
+        hits = " + ".join("(instr(lower(request || ' ' || COALESCE(summary, '') || ' ' || metadata_json), ?) > 0)"
+                          for _ in words)
+        with self._lock:
+            rows = self._db.execute(f"SELECT *, ({hits}) AS score FROM tasks WHERE ({hits}) > 0 "
+                                    "ORDER BY score DESC, updated_at DESC LIMIT ?",
+                                    [w.lower() for w in words] * 2 + [limit]).fetchall()
+        return [self._row_task(row) for row in rows]
+
+    def update(self, task_id: str, now: float | None = None, *, meta: dict[str, Any] | None = None,
+               drop: tuple[str, ...] = (), **changes: Any) -> TaskRecord:
+        """Atomic read-modify-write. `meta` is merged into metadata and `drop` removes keys, so writers in
+        other processes never lose each other's fields. `metadata=` still replaces it whole."""
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._db.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+                if row is None:
+                    raise KeyError(f"unknown task {task_id}")
+                task = self._row_task(row)
+                for key, value in changes.items():
+                    if not hasattr(task, key):
+                        raise ValueError(f"unknown task field {key}")
+                    setattr(task, key, value)
+                if meta or drop:
+                    task.metadata = {k: v for k, v in {**task.metadata, **(meta or {})}.items() if k not in drop}
+                task.updated_at = _now() if now is None else now
+                self._write_task(task)
+                self._db.execute("COMMIT")
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
         return task
 
     def add_event(self, event: TaskEvent) -> TaskEvent:
@@ -167,6 +197,28 @@ class TaskRegistry:
             )
             self._db.commit()
         return event
+
+    def last_event_rowid(self) -> int:
+        with self._lock:
+            return self._db.execute("SELECT COALESCE(MAX(rowid), 0) FROM events").fetchone()[0]
+
+    def events_after(self, rowid: int, limit: int = 500) -> list[tuple[int, TaskEvent]]:
+        """Events written after `rowid`, by any process, oldest first."""
+        with self._lock:
+            rows = self._db.execute("SELECT rowid AS r, * FROM events WHERE rowid > ? ORDER BY rowid LIMIT ?",
+                                    (rowid, limit)).fetchall()
+        return [(row["r"], self._row_event(row)) for row in rows]
+
+    def get_cursor(self, name: str) -> int | None:
+        """How far a reader (the Maid) has delivered events; survives restarts."""
+        with self._lock:
+            row = self._db.execute("SELECT pos FROM cursors WHERE name = ?", (name,)).fetchone()
+        return row[0] if row else None
+
+    def set_cursor(self, name: str, rowid: int) -> None:
+        with self._lock:
+            self._db.execute("INSERT INTO cursors (name, pos) VALUES (?, ?) "
+                             "ON CONFLICT(name) DO UPDATE SET pos = excluded.pos", (name, rowid))
 
     def events(self, task_id: str | None = None, limit: int = 100) -> list[TaskEvent]:
         if task_id:
@@ -215,7 +267,6 @@ class TaskRegistry:
                     json.dumps(task.metadata, ensure_ascii=False),
                 ),
             )
-            self._db.commit()
 
     @staticmethod
     def _row_task(row: sqlite3.Row) -> TaskRecord:

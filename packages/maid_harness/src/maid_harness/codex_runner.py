@@ -1,27 +1,31 @@
-"""Codex as the sub-agent runner (ARCHITECTURE §5.2, P3): one `codex exec` process per task run.
+"""Codex as the sub-agent runner (ARCHITECTURE §5.2, P3 + P3.5).
+
+  Maid ── CodexRunner.spawn() ──▶ python -m maid_harness.subagent run …   (detached: outlives the Maid)
+                                     └─ codex exec --json …                 (CODEX_HOME = a clean home, codex_home.py)
+                                          └─ python -m maid_harness.subagent mcp …   (its four tools, stdio)
 
   first run   codex exec --json -C runs/tasks/<id> <brief + goal>          -> thread.started gives the session id
   resume      codex exec resume --json <thread_id> <answer / grant / follow-up>   (cwd = the task workspace)
 
-The sub-agent reaches the harness only through its own MCP URL (subagent_mcp.py). Every JSON event is saved to
-runs/tasks/<id>/events.jsonl. Cancel kills the process group, a timeout fails the task, and an exit without
-submit_result fails it too (core.py decides; this only runs the process).
-Flags checked against codex-cli 0.165.0 (2026-10-31): `resume` has no -s/-C, so the sandbox is set with -c.
+Sandbox (checked against codex-cli 0.165.0, 2026-10-31): a filesystem permission profile, not sandbox_mode.
+The sub-agent can read the system basics and read/write its own workspace and temp dir; everything else,
+reads included, needs a grant. Grants are passed per run as one inline TOML table (`-c` cannot spell a
+path as a dotted key). Shell network is off unless granted. Web search (quick tier) is Codex's own tool.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-import signal
+import shlex
+import subprocess
+import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .models import TaskRecord
-from .subagent_mcp import SubAgentTools
-from .workers import Progress, Worker
+from .workers import DetachedWorker
 
 BRIEF = """You are a background sub-agent working for Natsume, a voice assistant. She hands you one task and
 reads your result aloud to the user in Japanese. The user cannot see your output, only what you submit.
@@ -30,29 +34,35 @@ Rules:
 - Work in English. Use the `maid` MCP tools to talk to the harness.
 - Call report_progress at real milestones (a few times, not every step).
 - If you cannot continue without the user, call ask_user with one short question and end your turn.
-- If your sandbox blocks something you need (writing outside your workspace, network, full access), call
-  request_permission and end your turn. Never try to get around the sandbox.
+- You may read and write only inside your workspace. To read or write anything outside it, or to use the
+  network from the shell, call request_permission first (kind read_path / write_path with the absolute path,
+  or network) and end your turn. Never try to get around the sandbox. If something is blocked, ask.
 - Finish by calling submit_result. user_summary is spoken aloud: 1-3 plain sentences with the actual answer
-  or outcome (numbers, names, what changed), no markdown, no URLs. Put longer material in details.
+  or outcome (numbers, names, what changed), no markdown, no URLs. Put everything the user may ask about next
+  (all options with their numbers, sources, details) in details.
 - If you could not do it, still call submit_result and say plainly what failed. Never claim what you did not do.
 """
+
+BASE_FILESYSTEM = {":minimal": "read", ":workspace_roots": "write", ":tmpdir": "write"}
+# what a sub-agent's shell may see of the Maid's environment: never her .env secrets (API keys)
+ENV_KEEP = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR",
+            "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "SSL_CERT_FILE")
 
 
 @dataclass
 class Profile:
     name: str
-    sandbox: str = "read-only"         # read-only | workspace-write | danger-full-access
     effort: str = "low"                # model_reasoning_effort
-    search: bool = False               # live web search
-    network: bool = False              # network for shell commands (workspace-write only)
+    search: bool = False               # Codex's live web search tool
+    network: bool = False              # network for shell commands
     timeout_s: float = 300.0
-    model: str = ""                    # "" = the user's Codex default
+    model: str = ""                    # "" = whatever the user's ~/.codex uses
     extra: list[str] = field(default_factory=list)  # more -c key=value overrides
 
 
 PROFILES = {
-    "quick": Profile("quick", "read-only", "low", search=True, timeout_s=300),
-    "work": Profile("work", "workspace-write", "medium", timeout_s=1800),
+    "quick": Profile("quick", "low", search=True, timeout_s=300),
+    "work": Profile("work", "low", timeout_s=1800),
 }
 
 
@@ -60,41 +70,60 @@ def _toml(value) -> str:
     return json.dumps(value)  # JSON strings, lists and booleans are valid TOML literals
 
 
-def config_overrides(profile: Profile, mcp_url: str, grants: list[dict]) -> list[str]:
-    """-c overrides for one run. Grants from request_permission widen the sandbox for this task only."""
-    sandbox, roots, network = profile.sandbox, [], profile.network
+def filesystem_table(grants: list[dict]) -> dict:
+    fs = dict(BASE_FILESYSTEM)
     for g in grants:
-        kind = g.get("kind")
+        kind, target = g.get("kind"), g.get("target")
         if kind == "full_access":
-            sandbox = "danger-full-access"
-        elif kind in ("write_path", "network") and sandbox == "read-only":
-            sandbox = "workspace-write"
-        if kind == "write_path" and g.get("target"):
-            roots.append(str(g["target"]))
-        if kind == "network":
-            network = True
+            fs["/"] = "write"
+        elif kind in ("read_path", "write_path") and target:
+            path = str(Path(str(target)).expanduser())
+            if fs.get(path) != "write":
+                fs[path] = "write" if kind == "write_path" else "read"
+    return fs
+
+
+def config_overrides(profile: Profile, mcp_cmd: list[str], grants: list[dict]) -> list[str]:
+    """-c overrides for one run. Grants from request_permission widen the sandbox for this task only."""
+    network = profile.network or any(g.get("kind") in ("network", "full_access") for g in grants)
+    fs = filesystem_table(grants)
     kv = {
-        "mcp_servers.maid.url": mcp_url,
+        "mcp_servers.maid.command": mcp_cmd[0],
+        "mcp_servers.maid.args": mcp_cmd[1:],
         # our four tools touch only this task; "prompt" (the default) hangs an unattended exec forever
         "mcp_servers.maid.default_tools_approval_mode": "approve",
-        "sandbox_mode": sandbox,
         "approval_policy": "never",           # exec is unattended; escalation goes through request_permission
         "model_reasoning_effort": profile.effort,
-        "notify": [],                         # don't fire the user's desktop turn-ended hook for sub-agents
         "web_search": "live" if profile.search else "disabled",
+        "permissions.maid.network.enabled": network,
     }
-    if sandbox == "workspace-write":
-        kv["sandbox_workspace_write.network_access"] = network
-        if roots:
-            kv["sandbox_workspace_write.writable_roots"] = roots
     if profile.model:
         kv["model"] = profile.model
     out = []
     for k, v in kv.items():
         out += ["-c", f"{k}={_toml(v)}"]
+    out += ["-c", "permissions.maid.filesystem={" + ", ".join(f"{_toml(k)}={_toml(v)}" for k, v in fs.items()) + "}"]
     for extra in profile.extra:
         out += ["-c", extra]
     return out
+
+
+def command(task: TaskRecord, workspace: Path, profile: Profile, codex: list[str], mcp_cmd: list[str]) -> list[str]:
+    meta = task.metadata
+    cfg = config_overrides(profile, mcp_cmd, meta.get("grants", []))
+    thread, message = meta.get("thread_id"), meta.get("pending_message")
+    if thread and message:
+        return [*codex, "exec", "resume", "--json", "--skip-git-repo-check", *cfg, thread, message]
+    prompt = (f"{BRIEF}\nTask: {meta.get('goal') or task.request}\n"
+              f"The user's own words (Japanese speech recognition, may contain mistakes): {task.request}\n"
+              f"Your workspace: {workspace}")
+    return [*codex, "exec", "--json", "--skip-git-repo-check", "-C", str(workspace), *cfg, prompt]
+
+
+def subagent_env(home: Path) -> dict:
+    env = {k: v for k, v in os.environ.items() if k in ENV_KEEP}
+    env["CODEX_HOME"] = str(home)
+    return env
 
 
 def describe_item(item: dict) -> str | None:
@@ -109,82 +138,53 @@ def describe_item(item: dict) -> str | None:
     return None
 
 
-class CodexRunner(Worker):
-    def __init__(self, harness, tools: SubAgentTools, root: Path, profile: Profile, codex: str = "codex") -> None:
-        self.harness, self.tools, self.root, self.profile, self.codex = harness, tools, root, profile, codex
+class CodexRunner(DetachedWorker):
+    """Starts the detached supervisor for one run of one task."""
 
-    def command(self, task: TaskRecord, workspace: Path) -> list[str]:
-        meta = task.metadata
-        cfg = config_overrides(self.profile, self.tools.url_for(task.task_id), meta.get("grants", []))
-        thread, message = meta.get("thread_id"), meta.get("pending_message")
-        if thread and message:
-            return [self.codex, "exec", "resume", "--json", "--skip-git-repo-check", *cfg, thread, message]
-        goal = meta.get("goal") or task.request
-        prompt = (f"{BRIEF}\nTask: {goal}\n"
-                  f"The user's own words (Japanese speech recognition, may contain mistakes): {task.request}\n"
-                  f"Your workspace: {workspace} (sandbox: {self.profile.sandbox})")
-        return [self.codex, "exec", "--json", "--skip-git-repo-check", "-C", str(workspace), *cfg, prompt]
+    def __init__(self, db: Path, root: Path, home: Path, profile: Profile, codex: str = "codex") -> None:
+        self.db, self.root, self.home, self.profile, self.codex = db, root, home, profile, codex
 
-    async def run(self, task: TaskRecord, report: Progress) -> None:
+    def spawn(self, task: TaskRecord) -> subprocess.Popen:
         workspace = self.root / task.task_id
         workspace.mkdir(parents=True, exist_ok=True)
-        cmd = self.command(task, workspace)
-        with open(workspace / "runs.jsonl", "a", encoding="utf-8") as f:
-            f.write(json.dumps({"t": time.time(), "profile": self.profile.name, "argv": cmd[:-1]}) + "\n")
-        stderr = open(workspace / "stderr.log", "ab")
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, cwd=workspace, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
-            stderr=stderr, start_new_session=True, limit=16 * 1024 * 1024)
+        argv = [sys.executable, "-m", "maid_harness.subagent", "run", "--db", str(self.db), "--task", task.task_id,
+                "--root", str(self.root), "--home", str(self.home), "--codex", self.codex,
+                "--profile", json.dumps(asdict(self.profile))]
+        log = open(workspace / "supervisor.log", "ab")
         try:
-            await asyncio.wait_for(self._read(task.task_id, proc, workspace), self.profile.timeout_s)
-            code = await proc.wait()
-        except asyncio.TimeoutError:
-            self._kill(proc)
-            raise TimeoutError(f"the sub-agent took longer than {int(self.profile.timeout_s)} s") from None
-        except asyncio.CancelledError:
-            self._kill(proc)
-            raise
+            return subprocess.Popen(argv, cwd=workspace, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                                    start_new_session=True)  # its own group: survives the Maid, killed as one
         finally:
-            stderr.close()
-        current = self.harness.registry.get(task.task_id)
-        meta = current.metadata if current else {}
-        if code != 0 and not meta.get("result") and not meta.get("pause"):
-            tail = (workspace / "stderr.log").read_bytes()[-400:].decode("utf-8", "replace").strip()
-            raise RuntimeError(f"codex exited with {code}: {tail.splitlines()[-1] if tail else 'no output'}")
-        return None  # the outcome is whatever the agent submitted through its tools
+            log.close()
 
-    async def _read(self, task_id: str, proc, workspace: Path) -> None:
-        with open(workspace / "events.jsonl", "ab") as log:
-            async for line in proc.stdout:
-                log.write(line)
-                log.flush()
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                self._on_event(task_id, event)
 
-    def _on_event(self, task_id: str, event: dict) -> None:
-        reg = self.harness.registry
-        task = reg.get(task_id)
-        if task is None:
-            return
-        kind = event.get("type")
-        if kind == "thread.started" and event.get("thread_id"):
-            reg.update(task_id, metadata={**task.metadata, "thread_id": event["thread_id"]})
-        elif kind == "turn.completed" and event.get("usage"):
-            usage = [*task.metadata.get("usage", []), event["usage"]]
-            reg.update(task_id, metadata={**task.metadata, "usage": usage})
-        elif kind == "item.completed":
-            item = event.get("item") or {}
-            if item.get("type") == "agent_message" and item.get("text"):
-                reg.update(task_id, metadata={**task.metadata, "last_message": item["text"][-2000:]})
-            elif (text := describe_item(item)) and task.status == "running":
-                reg.update(task_id, progress_text=text)
+def codex_argv(codex: str) -> list[str]:
+    return shlex.split(codex)
 
-    @staticmethod
-    def _kill(proc) -> None:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)  # the whole tree: codex plus anything it started
-        except ProcessLookupError:
-            pass
+
+def log_run(workspace: Path, record: dict) -> None:
+    with open(workspace / "runs.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps({"t": time.time(), **record}, ensure_ascii=False) + "\n")
+
+
+KEPT_FILES = {"events.jsonl", "runs.jsonl", "stderr.log", "supervisor.log"}  # the dataset; the rest is work
+
+
+def prune_workspaces(root: Path, registry, retention_days: float) -> int:
+    """Delete the files sub-agents made in workspaces of tasks finished more than `retention_days` ago.
+    Their event logs stay (the task dataset). Returns how many workspaces were pruned."""
+    import shutil
+
+    cutoff, pruned = time.time() - retention_days * 86400, 0
+    for task in registry.list():
+        ws = root / task.task_id
+        if task.status in ("accepted", "running", "needs_input", "needs_permission", "waiting_confirmation") \
+                or task.updated_at > cutoff or task.metadata.get("pruned") or not ws.is_dir():
+            continue
+        for entry in ws.iterdir():
+            if entry.name in KEPT_FILES:
+                continue
+            shutil.rmtree(entry) if entry.is_dir() and not entry.is_symlink() else entry.unlink()
+        registry.update(task.task_id, meta={"pruned": time.time()})
+        pruned += 1
+    return pruned

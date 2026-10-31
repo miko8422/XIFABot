@@ -51,7 +51,7 @@ class TurnHooks(Protocol):
     async def plan(self, text: str, kind: str) -> TurnPlan: ...      # kind: "turn" | "notice"
     def ack(self, calls: list[ToolCall]) -> str | None: ...          # line to say if the LLM said nothing
     async def run(self, calls: list[ToolCall], user_text: str) -> None: ...
-    def remember(self, turns: list[ChatTurn], mode: str) -> None: ...  # what just entered the history
+    def remember(self, turns: list[ChatTurn], mode: str, tool_calls: list[dict]) -> None: ...  # entered the history
 
 
 class TurnController:
@@ -334,7 +334,7 @@ class TurnController:
         self.history = [*self.history, *turns][-2 * self.history_turns:]
         if self.hooks:
             try:
-                self.hooks.remember(turns, trace.mode)
+                self.hooks.remember(turns, trace.mode, trace.tool_calls)
             except Exception as e:  # a failing log write must not take the voice loop down
                 asyncio.ensure_future(self._emit({"type": "error", "message": f"remember failed: {e}"}))
 

@@ -43,9 +43,9 @@ Botmux and MikuDance are **not part of this project**. MikuDance is the author's
 7. The **memory bank belongs to the Maid**. The harness keeps the full **task dataset**. Each finished task produces a short **summary** that feeds both the Maid's spoken report and the memory bank.
 8. The event inbox is the loop that wakes the Maid (and delivers messages to sub-agents). It is delivery, not reasoning.
 9. Routing is **intent detection through a `delegate` tool inside the existing reply call** (§4.2). (2026-10-31)
-10. Sub-agents run on **Codex** (CLI or SDK), chosen because it is open source and can be slimmed down later for faster task processing. Codex is more than this demo needs; the runner interface keeps it replaceable. (2026-10-31)
-11. Sub-agents are **sandboxed by default**. Anything beyond the sandbox goes through the Maid, who asks the user by voice to grant it (§5.5). (2026-10-31)
-12. Tasks run inside the Maid's process. When the Maid stops, running tasks are interrupted, since the Maid controls and can interrupt its sub-agents (§6). (2026-10-31)
+10. Sub-agents run on **Codex** (CLI or SDK), chosen because it is open source and can be slimmed down later for faster task processing. Codex is more than this demo needs; the runner interface keeps it replaceable. (2026-10-31) Since P3.5 they run in a **clean, isolated CODEX_HOME** rebuilt from the user's `~/.codex` before every run: provider and login only (so cc-switch changes apply), none of the user's skills, MCP servers, hooks or sessions. Model GPT-5.6-Luna at low effort. (2026-10-31)
+11. Sub-agents are **sandboxed by default**. Anything beyond the sandbox goes through the Maid, who asks the user by voice to grant it (§5.5). (2026-10-31) Since P3.5 this covers **reads too**: outside its own folder a sub-agent can read only system basics, and anything else needs a voice grant. The Maid's `.env` secrets are never in a sub-agent's environment. (2026-10-31)
+12. ~~Tasks run inside the Maid's process.~~ **Changed 2026-10-31 (P3.5):** sub-agents run detached and **survive the Maid**. Their supervisor writes every result to SQLite and the task folder. On restart the Maid keeps watching the ones still alive, reports the ones that finished while she was down, marks dead ones `interrupted`, and asks pending questions again. Cancel still kills them.
 13. The screen observer is **rebuilt as a reporter**. It is part of the agent loop, for context, for more fluent interaction, and for proactive chat while gaming or working (§5.6). (2026-10-31)
 14. Desktop activity comes from **ActivityWatch**, not our own adapter (§5.4). (2026-10-31)
 15. Conversation persistence moves up to right after the voice-loop connection (§9). (2026-10-31)
@@ -230,9 +230,9 @@ Which app counts as what comes from a small config file (`activity_profiles`), f
 
 ## 6. Process model
 
-One process, `maid-agent serve`: voice runtime + Maid core + harness, on asyncio. Sub-agents are child processes. Everything persists to SQLite under `runs/`.
+One process, `maid-agent serve`: voice runtime + Maid core + harness, on asyncio. Each sub-agent run is a **detached** process group: `python -m maid_harness.subagent run` (supervisor) → `codex exec` → `python -m maid_harness.subagent mcp` (its tools). Everything persists to SQLite under `runs/`, which is the only channel between them, so no daemon is needed.
 
-The Maid controls its sub-agents, so stopping the Maid stops them. On restart, the registry is reloaded. Tasks that were running are marked `interrupted`, and the Maid mentions them once. Because Codex sessions can be resumed, an interrupted task can be continued on request. (Decided 2026-10-31; a separate harness daemon is not planned.)
+Sub-agents outlive the Maid (P3.5, replacing the first decision that they stop with her). When the Maid restarts, `Harness.recover()` sorts the active tasks: supervisor alive and heartbeating → keep watching; queued → start when there is room; question or permission pending → ask again once; anything else → `interrupted`. `Harness.watch()` then delivers, from a cursor saved in the database, every event written while she was away, so finished results are reported. Cancel kills the whole process group. An interrupted task can be continued on request (same Codex thread).
 
 ## 7. Code layout
 
@@ -270,6 +270,7 @@ Updated when a phase lands. ✅ done · 🧪 prototype, to be rebuilt · ⏳ pla
 | Codex sub-agent runner, `quick`/`work` profiles, sandboxed task workspace | P3 | 🧪 real Codex runs, live voice gate pending |
 | Sub-agent tools: `report_progress`, `ask_user`, `request_permission`, `submit_result` | P3 | 🧪 |
 | Answering sub-agent questions and permission requests by voice, follow-up resume, timeout, `interrupted` on restart | P3 | 🧪 |
+| Clean isolated Codex home, durable detached sub-agents, read sandbox, correction pass, read/search tools, 3-day window, budgets | P3.5 | 🧪 real runs done, live voice gate pending |
 | ActivityWatch reporter, `activity_profiles` (game/call/work) | P4 | ⏳ |
 | Screen reporter (rebuilt from the observer), per-activity speech rules | P4 | ⏳ |
 | Memory bank: from task summaries and 「覚えておいて」, list/correct/delete | P5 | ⏳ |
@@ -326,24 +327,37 @@ Codex runner, `quick` and `work` profiles, sandboxed per-task workspace, sub-age
   - `work` task blocked outside its folder → `request_permission` → grant → resumed with that folder writable → file written: 62 s.
   - Each run costs about 100–200k input tokens (90% cached) because of the user's full Codex setup. Slimming the sub-agent's Codex config is a later step.
 - Silent rehearsal through `MaidAgent` (real DeepSeek + Codex): 「何ができる？」 → the real list; the weather request → real result spoken about 44 s later; 「ついでに明日の大阪も」 → `follow_up_task` on the same session → real forecast.
-- Not yet: a hard kill of the Maid leaves its Codex process running (it has its own process group). Normal stops kill it.
+- A hard kill of the Maid used to orphan the Codex process and lose its result. P3.5 makes that the intended behavior: runs continue and their results are kept.
 
-### P3.5 — Sub-agent hardening (proposed 2026-10-31, waiting for Alan's OK)
-Found in live P3 use, or asked for by Alan:
-1. **Said it, didn't do it (bug).** 「それ高すぎ、もっと安いもの」 → she said 「探し直してくる」 with no tool call, then claimed a re-search was running. Fix: when her reply claims an action (探してくる, 止める, 続けさせる, …) but no tool was called, run one correction call ("you said X but called nothing: call the tool now, or nothing") and execute what it returns. This costs one extra call only in that case, after she has spoken.
-2. **She can't see results in detail.** She gets the 1–3 sentence summary, not `details`, so 「もっと安いのは？」 has nothing to reason from. Fix: `details` and the last messages of recent tasks become readable through a `read_task(task_id)` lookup tool.
-3. **Follow-up on a cancelled task did nothing, silently.** Allow `follow_up` on cancelled tasks. Any tool call that has no effect is reported back to her, so she corrects herself instead of claiming success.
-4. **An isolated, cheap sub-agent Codex.** Its own `CODEX_HOME` (`runs/codex_home/`) with only our config: DeepSeek Flash through the Responses API, no user skills, MCP servers, hooks or sessions. Measured: a work task in 9 s with about 43k input tokens, against 100–200k on the user's setup. Codex's built-in web search is OpenAI-only, so `research` needs a search MCP in that home (open-websearch or a search API: to decide). The user's own `~/.codex` stays untouched and stays available as a future "heavy" runner.
-5. **Durable sub-agents (changes Decided #12).** Sub-agents survive a hard kill of `serve`. Each task gets a small detached supervisor process (`maid-subagent`) that starts Codex, enforces the timeout, and records every result in SQLite and the task folder, and the sub-agent tools become a stdio MCP that writes to SQLite directly. The Maid then only starts tasks and watches the database. On restart it reconciles: still running (pid alive) → keep watching, finished → report once, dead without result → `interrupted`.
-6. **Bounded context: a 3-day window plus search.** The state block shows active tasks and the few most recent from the last 3 days. Anything older is found with `search_tasks(query)` and `search_conversation(query)` (SQLite full-text), so the prompt never grows with history.
-7. **Resources.** A limit on concurrent sub-agents (2), workspace retention (files deleted N days after finishing, event logs kept), and token and cost accounting per task and per day from Codex usage events, with an optional daily budget.
+### P3.5 — Sub-agent hardening — built 2026-10-31
+Found in live P3 use, or asked for by Alan. All built. Real-run numbers are from GPT-5.6-Luna low through the user's provider.
+1. **Said it, didn't do it.** In live use she said 「探し直してくる」 with no tool call. Fixed by a stricter rule plus a **correction pass**: if a reply matches action words (`turns.py` `CLAIMS`) and called nothing, one extra call (same context, "call the tool now or nothing") runs and executes what it returns. In the rehearsal of the same conversation she called `follow_up_task` herself, so the correction pass did not have to fire.
+2. **Results in detail.** The state block shows the newest result's `details`, and the `read_task` tool reads any task's full result. In the rehearsal, 「候補、全部教えて」 got all four products with prices.
+3. **No silent no-ops.** `follow_up` works on cancelled tasks. A tool call that changed nothing is fed back to her (`[correction] … did nothing`), so she tells the truth instead of claiming success.
+4. **A clean, isolated Codex** (`maid_harness/codex_home.py`). `runs/codex_home/` is rebuilt before every run from `~/.codex`: provider and login settings only, plus `auth.json` linked, never copied. Skills, MCP servers, hooks, notify and the user's sessions are not in it, and 22 Codex features a sub-agent doesn't need are off (the apps connector alone stalled startup about 35 s). Every run records a fingerprint: provider, endpoint host, model, and a hash of the account id. Weather question: 142k → 68k input tokens and 41 → 40 s.
+5. **Durable sub-agents** (`maid_harness/subagent.py`). A detached supervisor per run, plus the four tools as a stdio MCP writing to SQLite (`subagent_mcp.py`). The registry does atomic merges across processes, and `Harness.watch()` delivers other processes' events from a saved cursor. Real test: the Maid process exited mid-task, Codex kept running, and a new Maid process found it still running and reported its result.
+6. **Sandbox for reads.** A Codex filesystem permission profile: system basics readable, workspace and temp dir writable, everything else blocked. Grants (`read_path`, `write_path`, `network`, `full_access`) are passed per run as one inline TOML table. Real test: reading the repo README was blocked → `request_permission(read_path)` → yes → read. The sub-agent's environment is stripped to PATH/HOME/locale/proxy, so no `.env` keys.
+7. **3-day window plus search.** The state block shows active tasks plus the 3 most recent from the last 3 days, and says how many more there are. `search_tasks` and `search_conversation` reach anything older.
+8. **Resources.**
+   - At most `max_running` (2) sub-agents at once; the rest are queued.
+   - Workspace files are pruned after `retention_days` (7), and event logs are kept.
+   - Token use is recorded per task and per day, shown in the UI and at startup, with an optional `daily_token_budget`.
+
+Voice stall found in live P3.5 use (fixed): twice in one session the turn hung in "committing" and her next line was "shown but jammed" for about 50 s. Cause, from the oMLX log: Qwen3-ASR fell into a repetition loop on an ordinary clip and generated up to oMLX's default cap of 8,192 tokens (84 s). oMLX runs one request at a time, so ASR timed out and TTS waited behind it. It happened 2 times in 1,589 transcriptions, unrelated to the sub-agents that happened to be running. Fix: `asr.py` sends `max_tokens = 32 + 15 × seconds of audio`. Transcripts are unchanged, and a runaway now stops within a second.
+
+Known limits:
+- The model is pinned to `gpt-5.6-luna`. If cc-switch moves to a provider without it, sub-agent runs fail visibly, as `failed` with Codex's error.
+- A run resumed after an account switch continues on the new account.
 
 ### P4 — Reporters and proactive speech
 ActivityWatch reporter, the screen observer rebuilt as a reporter (§5.6), speech arbiter per-activity rules (working, gaming, call, AFK).
 **Gate:** a normal working day and a gaming session, with a count of unprompted remarks and your rating of them. No spam, nothing spoken over you.
 Known issue to fix here: vision and TTS share oMLX and the GPU, and her voice stutters when they overlap. `look_at_screen` already waits for her acknowledgement to finish (P2), but a proactive look can still overlap with a reply if the user starts talking during it. The reporter should pause or queue vision while she speaks.
 
-Added 2026-10-31: **your coding sessions reporter** (read-only). The Maid knows which Claude Code and Codex sessions *you* are running, what each is doing, and whether one waits for you. The first version reads the session files the tools already write (`~/.claude/projects/**/*.jsonl`, `~/.codex/sessions/**`), the last 3 days only, summarized locally. No config changes and no hooks. CodeIsland (wxtsky/CodeIsland, MIT) gets live status by installing hooks into `~/.claude/settings.json` and `~/.codex/hooks.json` that forward events over a Unix socket. That is a possible v2 for live status, but it writes into your real tools' config, so it is opt-in. The Maid's own sub-agents live in their own `CODEX_HOME`, so they never appear among your sessions, and the reporter never reads that home.
+Planned (Alan, 2026-10-31), **future work, not yet scheduled**: a CodeIsland-like **"your sessions" reporter**. The Maid knows the Claude Code and Codex sessions *you* are running (not her sub-agents), and speaks up when one finishes or waits for your approval, as an information source and a sense of working together. She has **no power to approve anything**.
+- How to get the data: [CodeIsland](https://github.com/wxtsky/CodeIsland) (MIT) installs hooks into `~/.claude/settings.json` and `~/.codex/hooks.json`, and they forward events (session start, tool call, permission request, stop) over a Unix socket. That gives live "needs approval" status. Reading the session files the tools already write (`~/.claude/projects/**`, `~/.codex/sessions/**`) needs no config change but sees approvals late or not at all. Likely answer: our own hook entries next to CodeIsland's, forwarding to the Maid, opt-in, plus the files for history (last 3 days, searchable).
+- Isolation: the Maid's sub-agents live in `runs/codex_home/`, a different CODEX_HOME, so they never show up as your sessions and the reporter never reads that home.
+- Privacy: session summaries may go to DeepSeek (fine, per Alan), but **`.env` files, `auth.json` and anything that looks like a key are never sent**. A denylist plus secret redaction before any LLM call.
 
 ### P5 — Memory bank
 Memory bank from task summaries and explicit 「覚えておいて」 requests, list/correct/delete by voice or UI.

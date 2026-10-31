@@ -69,6 +69,24 @@ _SCHEMAS = [
         "parameters": {"type": "object", "properties": {
             "task_id": {"type": "string"}, "approve": {"type": "boolean"}}, "required": ["task_id", "approve"]},
     }},
+    {"type": "function", "function": {
+        "name": "read_task",
+        "description": ("Read a task's full result (all findings, options, numbers) or its latest activity, when the "
+                        "summary in the state is not enough to answer. You answer after reading."),
+        "parameters": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]},
+    }},
+    {"type": "function", "function": {
+        "name": "search_tasks",
+        "description": "Find older tasks that are not in the state block (more than 3 days ago, or not shown).",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "Keywords, English or Japanese."}}, "required": ["query"]},
+    }},
+    {"type": "function", "function": {
+        "name": "search_conversation",
+        "description": "Find something said earlier than the recent conversation you can see.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "Keywords, as they were probably said."}}, "required": ["query"]},
+    }},
 ]
 SCHEMAS = {t["function"]["name"]: t for t in _SCHEMAS}
 TOOLS = list(SCHEMAS.values())  # every tool, for the probe and tests
@@ -104,7 +122,9 @@ INSTRUCTIONS = """# 作業の頼まれごと
 雑談や、下の「今の作業」でわかることには delegate を使わない。
 画面やアプリを操作する作業も delegate を呼ぶ（tier は computer）。そのときは引き受けるのではなく「始めていい？」と聞く。作業は確認待ちになり、あきらが答えるまで始まらない。
 あきらが作業をやめてと言ったら、止めると言うだけでなく必ず cancel_task を呼ぶ。確認待ちや許可待ちの作業にあきらが答えたら confirm_task を呼ぶ。
-作業からの質問にあきらが答えたら answer_task を、終わった作業や中断した作業への追加の頼み（続けて、もう一度、ついでに）は新しい delegate ではなく follow_up_task を呼ぶ。
+作業からの質問にあきらが答えたら answer_task を、終わった作業や中断した作業への追加の頼み（続けて、もう一度、条件を変えて、ついでに）は新しい delegate ではなく follow_up_task を呼ぶ。
+作業の結果について細かく聞かれて「今の作業」の内容で足りなければ read_task、三日より前のことは search_tasks や search_conversation で調べる。
+「探してくる」「止める」「続けさせる」のように何かをすると言うときは、必ず同じ返答でそのツールを呼ぶ。呼ばないなら、すると言わない。
 作業が終わったとか、アプリを開いたとか、報告がないことは言わない。進み具合は「今の作業」に書いてあることだけを伝える。
 画面のことを聞かれたら look_at_screen を呼んで「ちょっと見る」とだけ言う。見る前に中身を言わない。答えは見たあとに伝える。
 英語のアプリ名やファイル名は、カタカナで言う。"""
@@ -119,11 +139,18 @@ def _ago(seconds: float) -> str:
     return f"{int(seconds // 60)}分前" if seconds >= 60 else f"{int(seconds)}秒前"
 
 
+WINDOW_S = 3 * 86400.0  # she sees finished tasks from the last 3 days; older ones only through search_tasks
+DETAILS_CHARS = 700
+
+
 def state_block(tasks: list[TaskRecord], now: float | None = None, recent: int = 3, facts: list[str] = ()) -> str:
-    """The T1 lookup context: active tasks plus the last few finished ones, newest first."""
+    """The T1 lookup context: active tasks, plus the few most recent finished ones from the last 3 days
+    (newest first, the newest with its details), so the prompt never grows with history."""
     now = time.time() if now is None else now
     active = [t for t in tasks if t.status in ACTIVE]
-    done = sorted((t for t in tasks if t.status not in ACTIVE), key=lambda t: -t.updated_at)[:recent]
+    finished = sorted((t for t in tasks if t.status not in ACTIVE and now - t.updated_at < WINDOW_S),
+                      key=lambda t: -t.updated_at)
+    done, hidden = finished[:recent], max(0, len(finished) - recent)
     lines = []
     for t in sorted(active, key=lambda t: -t.created_at) + done:
         line = f"- {t.task_id}: {t.goal} / {_STATUS_JA.get(t.status, t.status)} / 依頼 {_ago(now - t.created_at)}"
@@ -138,7 +165,18 @@ def state_block(tasks: list[TaskRecord], now: float | None = None, recent: int =
         if t.status == "needs_permission" and (perm := t.metadata.get("permission")):
             line += f" / 頼まれている許可: {perm.get('what')}（理由: {perm.get('why')}）"
         lines.append(line)
+    if done and (details := (done[0].metadata.get("result") or {}).get("details")):
+        lines.append(f"  （{done[0].task_id} の詳しい結果）{details[:DETAILS_CHARS]}"
+                     + ("…（続きは read_task）" if len(details) > DETAILS_CHARS else ""))
+    if hidden:
+        lines.append(f"（ほかに三日以内の作業が{hidden}件。もっと前のものも search_tasks で探せる）")
     out = "# 今の作業\n" + ("\n".join(lines) if lines else "（なし）")
     if facts:
         out += "\n\n# 最近わかったこと（報告から。推測を含む）\n" + "\n".join(f"- {f}" for f in facts)
     return out
+
+
+def usage_since(tasks: list[TaskRecord], since: float) -> int:
+    """Sub-agent tokens (input + output) used since `since`, from the Codex usage events of every task."""
+    return sum(int(u.get("input_tokens", 0)) + int(u.get("output_tokens", 0))
+               for t in tasks for u in t.metadata.get("usage", []) if u.get("t", 0) >= since)

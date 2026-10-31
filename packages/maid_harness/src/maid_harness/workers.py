@@ -8,6 +8,7 @@ exists in this repository.
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -18,6 +19,14 @@ Progress = Callable[[int, str], Awaitable[None]]
 
 class Worker:
     async def run(self, task: TaskRecord, report: Progress) -> str:
+        raise NotImplementedError
+
+
+class DetachedWorker:
+    """A worker that runs in its own process and survives the Maid (P3.5). It reports only through the
+    shared SQLite registry; the Harness watches that. spawn() returns the supervisor's pid."""
+
+    def spawn(self, task: TaskRecord) -> "subprocess.Popen":
         raise NotImplementedError
 
 

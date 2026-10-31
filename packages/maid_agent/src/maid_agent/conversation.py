@@ -79,6 +79,18 @@ class ConversationLog:
                 "SELECT t, session_id, role, content, mode FROM conversation ORDER BY id DESC LIMIT ?", (n,)).fetchall()
         return [LoggedTurn(*r) for r in reversed(rows)]
 
+    def search(self, query: str, limit: int = 6) -> list[LoggedTurn]:
+        """Messages that contain the query's words, most matches first, then newest."""
+        words = [w for w in query.replace("、", " ").replace("。", " ").split() if w][:8]
+        if not words:
+            return []
+        hits = " + ".join("(instr(lower(content), ?) > 0)" for _ in words)
+        with self._lock:
+            rows = self._db.execute(f"SELECT t, session_id, role, content, mode, ({hits}) AS score FROM conversation "
+                                    f"WHERE ({hits}) > 0 ORDER BY score DESC, id DESC LIMIT ?",
+                                    [w.lower() for w in words] * 2 + [limit]).fetchall()
+        return [LoggedTurn(*r[:5]) for r in rows]
+
     def close(self) -> None:
         self._db.close()
 

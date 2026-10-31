@@ -16,6 +16,7 @@ class EventInbox:
         self.registry = registry
         self.clock = clock
         self._listeners: list[Callable[[TaskEvent], None]] = []
+        self.published: set[str] = set()  # ids this process published, so polling does not deliver them twice
 
     def subscribe(self, listener: Callable[[TaskEvent], None]) -> None:
         self._listeners.append(listener)
@@ -49,9 +50,14 @@ class EventInbox:
         stored = self.registry.add_event(event)
         # Duplicate events are not delivered twice, even to in-process listeners.
         if stored.event_id == event.event_id:
-            for listener in tuple(self._listeners):
-                listener(event)
+            self.published.add(event.event_id)
+            self.deliver(event)
         return stored
+
+    def deliver(self, event: TaskEvent) -> None:
+        """Hand an event to the listeners: published here, or written by another process and polled."""
+        for listener in tuple(self._listeners):
+            listener(event)
 
     def list(self, task_id: str | None = None, limit: int = 100) -> list[TaskEvent]:
         now = self.clock()
