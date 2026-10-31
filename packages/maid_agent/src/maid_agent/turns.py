@@ -3,6 +3,7 @@
 plan()  adds 「できること」 (from the harness capability list), the tool rules and the T1 state block
         to every reply call, plus keyword backstops
 ack()   a fixed line for when she calls a tool without saying anything
+remember()  every turn that entered her history goes to the conversation log (P2)
 run()   the side effects: submit / cancel / confirm through the harness API, or a lookup (look_at_screen)
         whose result goes back to her as a follow-up line, once the turn is committed
 """
@@ -18,7 +19,9 @@ from pathlib import Path
 
 from maid_harness import Harness
 from maid_voice.controller import TurnPlan
-from maid_voice.llm import ToolCall
+from maid_voice.llm import ChatTurn, ToolCall
+
+from .conversation import Conversation
 
 from .router import route_text, wants_cancel, yes_no
 from .tools import ACTIVE, INSTRUCTIONS, TIERS, capability_block, state_block, tools_for
@@ -29,7 +32,8 @@ NOTICE_RULES = """# 知らせ方
 これはあきらの発言ではなく、作業についての知らせ。あきらに向けて、ナツメらしく一、二文の日本語で伝える。
 内容は変えない、足さない。終わっていない作業を終わったと言わない。英語の名前はカタカナで言う。"""
 CONFIRM_WINDOW_S = 120.0  # a bare 「うん」 only confirms a task she asked about this recently
-LOOK_TIMEOUT_S = 15.0     # vision is ~5 s warm; a capture without screen-recording permission stalls for 30 s
+LOOK_TIMEOUT_S = 20.0     # waiting for her acknowledgement (<=5 s) + vision (~5 s warm); a capture
+                          # without screen-recording permission stalls for 30 s
 
 
 class MaidTurns:
@@ -37,7 +41,8 @@ class MaidTurns:
                  log_dir: Path | None = None, *,
                  look: Callable[[str], Awaitable[str]] | None = None,
                  followup: Callable[[str, str], None] | None = None,
-                 facts: Callable[[], list[str]] | None = None) -> None:
+                 facts: Callable[[], list[str]] | None = None,
+                 conversation: Conversation | None = None) -> None:
         """look(question) -> what was seen, in English; followup(id, text) speaks a lookup result;
         facts() -> the latest reporter facts for the state block."""
         if routing not in ("tool", "keyword"):
@@ -47,12 +52,15 @@ class MaidTurns:
         self.owner_id = owner_id
         self.log_dir = log_dir
         self.look, self.followup, self.facts = look, followup, facts
+        self.conversation = conversation
 
     # ---- TurnHooks ------------------------------------------------------------
     async def plan(self, text: str, kind: str) -> TurnPlan:
         tasks = self.harness.registry.list(owner_id=self.owner_id)
         caps = self.harness.capabilities.usable()
         state = state_block(tasks, facts=self.facts() if self.facts else ())
+        if self.conversation and (note := self.conversation.note()):
+            state = note + "\n\n" + state
         if kind == "notice":
             return TurnPlan(context=capability_block(caps) + "\n\n" + NOTICE_RULES + "\n\n" + state)
         active = sorted((t for t in tasks if t.status in ACTIVE), key=lambda t: -t.created_at)
@@ -83,6 +91,10 @@ class MaidTurns:
         if c.name == "look_at_screen":
             return "ちょっと見る。"
         return None
+
+    def remember(self, turns: list[ChatTurn], mode: str) -> None:
+        if self.conversation:
+            self.conversation.remember(turns, mode)
 
     async def run(self, calls: list[ToolCall], user_text: str) -> None:
         for c in calls:

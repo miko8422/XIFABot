@@ -122,7 +122,7 @@ The role card is versioned configuration and is never rewritten by conversation.
 
 | Where | Language | Why |
 | --- | --- | --- |
-| User → Maid (speech) | Japanese **or** English, mixed is fine | ASR auto-detects the language (`language = ""` in `config/default.toml`) |
+| User → Maid (speech) | Japanese, with English words and short English sentences | ASR pinned to `language = "ja"`. Auto-detect (`""`) turned Japanese into Korean in live use (2026-10-31). The oMLX endpoint takes one language or auto, so "Japanese or English only" would need a detect-then-retry pass |
 | Maid → user (speech) | Always Japanese | The persona and the Japanese ナツメ voice. The TTS only ever receives Japanese text |
 | Maid → sub-agent (`delegate` arguments) | English | The reply LLM writes the tool arguments in English in the same call where it speaks Japanese, so the translation is free |
 | Sub-agent work, task dataset, `user_summary`, MCP traffic | English | Best for Codex, and consistent logs |
@@ -132,7 +132,7 @@ The role card is versioned configuration and is never rewritten by conversation.
 The Maid's LLM already understands both languages and is already told to answer in Japanese. Translation therefore happens only inside the two LLM calls we make anyway (the `delegate` call, and the in-character notice), and adds no latency or extra layer. We don't need an English voice model.
 
 Risks, checked in P1:
-- Auto-detect costs about 20 ms over fixed `ja` (ASR experiment: 268 vs 247 ms median). Accuracy was the same on Japanese. English and mixed speech from the user's own mic are not measured yet.
+- Auto-detect costs about 20 ms over fixed `ja` (ASR experiment: 268 vs 247 ms median), but in live use it misread Japanese as Korean, so it is off. English sentences came through correctly even with `ja` pinned.
 - Japanese ASR mangles English technical words (app names, file names) inside Japanese sentences. Speaking English for work requests avoids this.
 - English words in her replies sound wrong in the Japanese voice. The role card's voice rules should require foreign names to be written in katakana.
 
@@ -265,8 +265,8 @@ Updated when a phase lands. ✅ done · 🧪 prototype, to be rebuilt · ⏳ pla
 | Task state for 「どうなった？」 questions (T1 lookups) | P1 | 🧪 |
 | Speech arbiter v1: never over the user, merge, heartbeat | P1 | 🧪 |
 | Cancel by voice | P1 | 🧪 |
-| ASR auto-detect (Japanese/English), English task arguments, in-character notices | P1 | 🧪 English from the real mic not measured yet |
-| Conversation log, restored after restart | P2 | ⏳ |
+| ASR pinned to Japanese (auto-detect misread Japanese as Korean), English task arguments, in-character notices | P1 | ✅ |
+| Conversation log, restored after restart, elapsed-time note | P2 | 🧪 built and rehearsed silently, live gate pending |
 | Codex sub-agent runner, `quick`/`work` profiles, sandboxed task workspace | P3 | ⏳ |
 | Sub-agent tools: `report_progress`, `ask_user`, `request_permission`, `submit_result` | P3 | ⏳ |
 | Answering sub-agent questions and permission requests by voice, follow-up resume, timeout, `interrupted` on restart | P3 | ⏳ |
@@ -298,12 +298,19 @@ Docs consolidated (this file). Split `maid_harness` out of `maid_agent`. Existin
 - Harness: `FakeSubAgent` (run time per tier set in `[agent]`), `interrupted` status, `Harness.recover()` on startup.
 - Probe (`maid_agent/scripts/probe_delegate.py`, 2 × 8 prompts, real role card): chitchat TTFT p50 513 ms with tools and 713 ms without, so no measurable cost. 15/16 routed right. Once she said 「止める」 without `cancel_task` (now covered by the backstop and a stricter rule), and once she called `delegate` without a word (now a fixed acknowledgement). `max_tokens` raised to 220 so the English `goal` fits.
 - Silent rehearsal with real DeepSeek and TTS: delegation in Japanese and English, a real-state answer to 「どうなった？」, completion spoken unprompted, and 「やめて」 cancelling the right one of two tasks all worked.
-- Left for the live gate: first-sound latency on the real mic, hands-free, English speech through auto-detect ASR.
+- Left for the live gate: first-sound latency on the real mic, hands-free. ASR auto-detect was tried live and reverted to `ja` (Japanese came out as Korean).
 - First live test (2026-10-31) ran a server started before P1 existed, so it was P0. It also exposed the real gap: she did not know her own abilities. Fixed by the capability list (§4.6), `look_at_screen`, and role card v2. Probe after the fix: 24/24 routed right, including the two weather requests and the screen question from that session, and 「何ができる？」 answered from the list. Chitchat TTFT p50 588 ms with tools vs 620 ms without.
 
 ### P2 — Conversation persistence
 Conversation log in SQLite, restored on restart with the elapsed-time note.
 **Gate:** stop and restart the Maid mid-conversation, and she continues it naturally.
+
+**Status (2026-10-31): built, live gate not run yet.**
+- `maid_agent/conversation.py`: every message that enters her history (your turns, her replies, cut-off replies marked （中断）, task notices, screen remarks) goes to `runs/maid/memory.sqlite3`, the Maid's own file, which the memory bank will share in P5. Speculative turns that were dropped are never logged.
+- On startup the last `restore_turns` (8) messages go back into her history, and the web UI shows them faded.
+- The elapsed-time note goes into the reply call: after a restart until her first reply, or after a pause of more than 30 minutes inside a session. It runs in steps from ほんの少し to N日 and says the conversation is remembered, without inventing what happened in between.
+- `TurnController` sends every history change through `hooks.remember()`, so the log and her history can't drift apart.
+- Silent rehearsal (real DeepSeek, three sessions on one database, restarts 20 s and 5 h apart): history and note restored every time. Asked 「さっきの話の続き」 / 「結局どっちにしたと思う？」, she picked up the topic in 2 of 4 resumes and hedged in character in the other 2. An early wording of the note made her act as if she had lost her memory, and was rewritten.
 
 ### P3 — First real sub-agent (Codex)
 Codex runner, `quick` and `work` profiles, sandboxed per-task workspace, sub-agent MCP tools (`report_progress`, `ask_user`, `request_permission`, `submit_result`), `task.answer`, follow-up resume, timeout, restart → `interrupted`.
@@ -312,6 +319,7 @@ Codex runner, `quick` and `work` profiles, sandboxed per-task workspace, sub-age
 ### P4 — Reporters and proactive speech
 ActivityWatch reporter, the screen observer rebuilt as a reporter (§5.6), speech arbiter per-activity rules (working, gaming, call, AFK).
 **Gate:** a normal working day and a gaming session, with a count of unprompted remarks and your rating of them. No spam, nothing spoken over you.
+Known issue to fix here: vision and TTS share oMLX and the GPU, and her voice stutters when they overlap. `look_at_screen` already waits for her acknowledgement to finish (P2), but a proactive look can still overlap with a reply if the user starts talking during it. The reporter should pause or queue vision while she speaks.
 
 ### P5 — Memory bank
 Memory bank from task summaries and explicit 「覚えておいて」 requests, list/correct/delete by voice or UI.

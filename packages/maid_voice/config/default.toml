@@ -11,7 +11,7 @@ save_raw_audio = false     # opt-in debug capture only
 provider = "omlx"
 base_url = "http://127.0.0.1:9800"
 model = "mlx-community--Qwen3-ASR-0.6B-8bit"
-language = ""              # auto-detect: Japanese or English input (ARCHITECTURE §4.5); "ja" to pin
+language = "ja"            # pinned: auto-detect ("") misread Japanese as Korean in live use (2026-10-31)
 
 [llm]
 provider = "deepseek"      # openai-compatible chat completions
@@ -33,6 +33,8 @@ fake_work_s = 45
 fake_computer_s = 15
 quiet_gap_s = 1.5          # task news waits this long after anyone spoke
 heartbeat_s = 180          # unprompted progress for a long task at most this often
+memory_db = "runs/maid/memory.sqlite3"  # her own file: conversation log (P2), memory bank later
+restore_turns = 8          # messages put back into her history on startup (capped by [llm].history_turns)
 
 [persona]
 # role card + expressions mined from her lines (scripts/build_expressions.py); off = the built-in prompt in llm.py

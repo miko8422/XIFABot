@@ -55,6 +55,7 @@
   .seg-btns button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
   #partial { min-height: 22px; color: var(--muted); font-style: italic; margin: 6px 0 0; }
   .turn.dropped { opacity: .45; }
+  .turn.restored { opacity: .6; }
   input[type=range] { width: 100%; }
   .screen-thumb { width: 100%; border-radius: 6px; border: 1px solid var(--line); display: block; margin: 8px 0 6px; }
   .pill { font-size: 11px; padding: 1px 8px; border-radius: 99px; background: var(--line); color: var(--ink); }
@@ -141,6 +142,7 @@ const send = (o) => ws.readyState === 1 && ws.send(JSON.stringify(o));
 const turns = {};   // gen -> {el}
 const done = [];    // turn summaries
 let talking = false;
+let restoredShown = false;
 
 function down() { if (talking || mode !== "ptt") return; talking = true; $("ptt").classList.add("on"); send({cmd: "ptt_down"}); }
 function up() { if (!talking) return; talking = false; $("ptt").classList.remove("on"); send({cmd: "ptt_up"}); }
@@ -274,6 +276,15 @@ ws.onmessage = (m) => {
         (t.summary ? ` · ${esc(t.summary)}` : "") + (t.error ? ` · ${esc(t.error)}` : "") + `</span>` +
         (live.includes(t.status) ? ` <button data-cancel="${t.task_id}">cancel</button>` : "") + `</div>`).join("")
         : `<span class="sub">none yet</span>`;
+      break;
+    }
+    case "history": {
+      if (restoredShown || !e.turns.length) break;
+      restoredShown = true;
+      const d = document.createElement("div"); d.className = "turn restored";
+      d.innerHTML = `<div class="tag">restored from before the restart</div>` + e.turns.map((t) =>
+        `<div class="${t.role === "user" ? "u" : "a"}" style="font-size:14px">${t.role === "user" ? "🎙 " : ""}${esc(t.content)}</div>`).join("");
+      $("log").prepend(d);
       break;
     }
     case "tool_calls": {

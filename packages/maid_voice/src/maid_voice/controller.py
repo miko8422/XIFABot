@@ -51,6 +51,7 @@ class TurnHooks(Protocol):
     async def plan(self, text: str, kind: str) -> TurnPlan: ...      # kind: "turn" | "notice"
     def ack(self, calls: list[ToolCall]) -> str | None: ...          # line to say if the LLM said nothing
     async def run(self, calls: list[ToolCall], user_text: str) -> None: ...
+    def remember(self, turns: list[ChatTurn], mode: str) -> None: ...  # what just entered the history
 
 
 class TurnController:
@@ -229,14 +230,13 @@ class TurnController:
 
             await self._speak(trace, self._llm_stage)
             if gen in self._committed:
-                self.history += [ChatTurn("user", trace.user_text), ChatTurn("assistant", trace.assistant_text)]
-            self.history = self.history[-2 * self.history_turns:]
+                self._remember([ChatTurn("user", trace.user_text), ChatTurn("assistant", trace.assistant_text)], trace)
             self._finish(trace)
         except asyncio.CancelledError:
             # trace is finished by the 'halted' playback event (see cancel())
             if trace.user_text and gen in self._committed:
-                self.history += [ChatTurn("user", trace.user_text),
-                                 ChatTurn("assistant", trace.assistant_text + "（中断）")]
+                self._remember([ChatTurn("user", trace.user_text),
+                                ChatTurn("assistant", trace.assistant_text + "（中断）")], trace)
             raise
         except Exception as e:  # stage failure: report, recover, keep the app alive
             trace.error = f"{type(e).__name__}: {e}"
@@ -273,7 +273,7 @@ class TurnController:
         gen = trace.generation_id
         try:
             await self._speak(trace, stage or self._fixed_text_stage)
-            self.history = [*self.history, ChatTurn("assistant", trace.assistant_text)][-2 * self.history_turns:]
+            self._remember([ChatTurn("assistant", trace.assistant_text)], trace)
             self._finish(trace)
         except asyncio.CancelledError:
             raise
@@ -329,6 +329,14 @@ class TurnController:
         for clause in seg.flush():
             await self._put_clause(trace, clauses, clause)
         await clauses.put(None)
+
+    def _remember(self, turns: list[ChatTurn], trace: TurnTrace) -> None:
+        self.history = [*self.history, *turns][-2 * self.history_turns:]
+        if self.hooks:
+            try:
+                self.hooks.remember(turns, trace.mode)
+            except Exception as e:  # a failing log write must not take the voice loop down
+                asyncio.ensure_future(self._emit({"type": "error", "message": f"remember failed: {e}"}))
 
     async def _run_calls(self, calls: list[ToolCall], user_text: str) -> None:
         try:

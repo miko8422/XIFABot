@@ -324,3 +324,29 @@ async def test_look_at_screen_answers_after_looking_through_the_arbiter():
         assert "[screen, asked: what is the weather shown]" in ctl.completed[-1]["notice"]
     finally:
         loop.cancel()
+
+
+@pytest.mark.asyncio
+async def test_screen_look_waits_until_her_acknowledgement_has_played():
+    from maid_agent.agent import AgentConfig, MaidAgent
+
+    class Screen:
+        def __init__(self):
+            self.states = []
+
+        async def look(self, q):
+            self.states.append((ctl.active_gen, ctl.state))
+            return "front app Warp"
+
+        def facts(self):
+            return []
+
+    harness, ctl, asr, llm = build()
+    agent = MaidAgent(Path("/tmp"), AgentConfig(), screen=Screen())
+    agent.ctx = Ctx(ctl)
+    ctl.active_gen, ctl.state = 7, "responding"  # she is still saying 「ちょっと見る」
+    look = asyncio.create_task(agent._look_when_quiet("what is on screen"))
+    await asyncio.sleep(0.2)
+    assert agent.screen.states == [], "vision must not start while she speaks"
+    ctl.active_gen, ctl.state = 0, "listening"
+    assert await look == "front app Warp" and agent.screen.states == [(0, "listening")]

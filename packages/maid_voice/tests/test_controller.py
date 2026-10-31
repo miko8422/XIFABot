@@ -239,7 +239,7 @@ async def test_say_speaks_a_fixed_line_and_is_refused_during_a_turn():
 
 class FakeHooks:
     def __init__(self, ack="わかった、やっておく。"):
-        self.ack_line, self.ran, self.plans = ack, [], []
+        self.ack_line, self.ran, self.plans, self.remembered = ack, [], [], []
 
     async def plan(self, text, kind):
         self.plans.append((text, kind))
@@ -250,6 +250,9 @@ class FakeHooks:
 
     async def run(self, calls, user_text):
         self.ran.append(([c.name for c in calls], user_text))
+
+    def remember(self, turns, mode):
+        self.remembered.append(([(t.role, t.content) for t in turns], mode))
 
 
 DELEGATE = ToolCall("delegate", {"goal": "search", "tier": "quick"})
@@ -313,3 +316,4 @@ async def test_notify_goes_through_the_llm_and_keeps_only_her_line_in_history():
     assert rec["mode"] == "notice" and rec["notice"] == "[completed] search: done" and rec["error"] is None
     assert hooks.plans[-1] == ("[completed] search: done", "notice") and llm.requests[-1]["tools"] is None
     assert [t.role for t in ctl.history] == ["assistant"] and ctl.history[0].content == "さっきの、終わったって。"
+    assert hooks.remembered == [([("assistant", "さっきの、終わったって。")], "notice")]
